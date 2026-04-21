@@ -98,7 +98,7 @@ class Trader:
 
     @property
     def mode(self) -> str:
-        return "paper" if self.settings.kalshi_env == "demo" else "live"
+        return getattr(self.settings, 'trading_mode', 'paper')
 
     @property
     def is_paused(self) -> bool:

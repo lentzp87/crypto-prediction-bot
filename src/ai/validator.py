@@ -208,7 +208,7 @@ class AIValidator:
                         "https://api.openai.com/v1/chat/completions",
                         headers={"Authorization": f"Bearer {self._openai_key}"},
                         json={
-                            "model": "gpt-4o-mini",
+                            "model": "gpt-4.1-nano",
                             "messages": [{"role": "user", "content": prompt}],
                             "temperature": 0.3,
                             "max_tokens": 500,
@@ -219,7 +219,7 @@ class AIValidator:
                     content = data["choices"][0]["message"]["content"]
                     parsed = self._parse_response(content)
                     return ModelResponse(
-                        model="gpt-4o-mini",
+                        model="gpt-4.1-nano",
                         latency_ms=(time.time() - start) * 1000,
                         **parsed,
                     )
@@ -237,7 +237,7 @@ class AIValidator:
                 break
 
         return ModelResponse(
-            model="gpt-4o-mini", action="FAILED", confidence=0,
+            model="gpt-4.1-nano", action="FAILED", confidence=0,
             side="", reasoning=str(last_err), risk_level="high",
             latency_ms=(time.time() - start) * 1000,
         )

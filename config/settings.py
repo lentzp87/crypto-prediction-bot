@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     # ── Kalshi API ──────────────────────────────────────────────
     kalshi_api_key: str = ""
     kalshi_private_key_path: str = "./keys/kalshi.pem"
-    kalshi_env: str = Field(default="demo", description="'demo' for paper, 'prod' for live")
+    kalshi_env: str = Field(default="prod", description="'demo' or 'prod' — which API for market data")
+    trading_mode: str = Field(default="paper", description="'paper' for simulated trades, 'live' for real orders")
 
     @property
     def kalshi_base_url(self) -> str:
