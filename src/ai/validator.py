@@ -332,8 +332,14 @@ class AIValidator:
 
         try:
             data = json.loads(content)
+            raw_action = data.get("action", "SKIP").upper().strip()
+            # Normalize common variations
+            if raw_action in ("BUY", "YES", "ENTER", "TRADE", "GO", "EXECUTE"):
+                raw_action = "FOLLOW"
+            elif raw_action in ("SELL", "NO", "PASS", "WAIT", "AVOID", "REJECT"):
+                raw_action = "SKIP"
             return {
-                "action": data.get("action", "SKIP").upper(),
+                "action": raw_action,
                 "confidence": float(data.get("confidence", 0)),
                 "side": data.get("side", "").lower(),
                 "reasoning": data.get("reasoning", ""),
