@@ -337,11 +337,25 @@ class KalshiScanner:
 
             for market in data.get("markets", []):
                 ticker = market.get("ticker", "")
-                parsed = parse_ticker(ticker)
-                if not parsed:
-                    continue
 
-                strike_price, close_time = parsed
+                # Try to get strike/close from API fields first, fall back to ticker parsing
+                strike_price = market.get("floor_strike")
+                close_time_str = market.get("close_time", "")
+
+                if strike_price and close_time_str:
+                    try:
+                        close_time = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
+                    except (ValueError, AttributeError):
+                        parsed = parse_ticker(ticker)
+                        if not parsed:
+                            continue
+                        strike_price, close_time = parsed
+                else:
+                    parsed = parse_ticker(ticker)
+                    if not parsed:
+                        continue
+                    strike_price, close_time = parsed
+
                 minutes_to_close = (close_time - now).total_seconds() / 60.0
 
                 # Skip contracts too close to expiry or already expired
@@ -351,7 +365,23 @@ class KalshiScanner:
                 if minutes_to_close > 1440:
                     continue
 
-                yes_price = market.get("yes_bid", 0) or market.get("last_price", 50)
+                # Kalshi API v2 returns prices in dollars as strings
+                # Try new format first (dollars), then fall back to old (cents)
+                yes_bid_str = market.get("yes_bid_dollars", "")
+                yes_ask_str = market.get("yes_ask_dollars", "")
+                no_bid_str = market.get("no_bid_dollars", "")
+                last_str = market.get("last_price_dollars", "")
+
+                if yes_bid_str and float(yes_bid_str) > 0:
+                    yes_price = int(float(yes_bid_str) * 100)
+                elif yes_ask_str and float(yes_ask_str) > 0:
+                    yes_price = int(float(yes_ask_str) * 100)
+                elif last_str and float(last_str) > 0:
+                    yes_price = int(float(last_str) * 100)
+                else:
+                    # Old API format (cents)
+                    yes_price = market.get("yes_bid", 0) or market.get("last_price", 50)
+
                 no_price = 100 - yes_price
 
                 contracts.append(KalshiContract(

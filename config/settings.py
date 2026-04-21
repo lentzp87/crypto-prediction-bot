@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     @property
     def kalshi_base_url(self) -> str:
         if self.kalshi_env == "prod":
-            return "https://trading-api.kalshi.com"
+            return "https://api.elections.kalshi.com"
         return "https://demo-api.kalshi.co"
 
     # ── AI Model Keys (all optional) ───────────────────────────
