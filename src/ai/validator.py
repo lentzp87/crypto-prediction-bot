@@ -198,36 +198,49 @@ class AIValidator:
     # ── Model Queries ──────────────────────────────────────────
 
     async def _query_openai(self, prompt: str) -> ModelResponse:
-        """Query GPT-4o-mini."""
+        """Query GPT-4o-mini with retry."""
         start = time.time()
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {self._openai_key}"},
-                    json={
-                        "model": "gpt-4o-mini",
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.3,
-                        "max_tokens": 500,
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                content = data["choices"][0]["message"]["content"]
-                parsed = self._parse_response(content)
-                return ModelResponse(
-                    model="gpt-4o-mini",
-                    latency_ms=(time.time() - start) * 1000,
-                    **parsed,
-                )
-        except Exception as e:
-            logger.warning(f"OpenAI query failed: {e}")
-            return ModelResponse(
-                model="gpt-4o-mini", action="FAILED", confidence=0,
-                side="", reasoning=str(e), risk_level="high",
-                latency_ms=(time.time() - start) * 1000,
-            )
+        last_err = None
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    resp = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {self._openai_key}"},
+                        json={
+                            "model": "gpt-4o-mini",
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": 0.3,
+                            "max_tokens": 500,
+                        },
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    content = data["choices"][0]["message"]["content"]
+                    parsed = self._parse_response(content)
+                    return ModelResponse(
+                        model="gpt-4o-mini",
+                        latency_ms=(time.time() - start) * 1000,
+                        **parsed,
+                    )
+            except httpx.HTTPStatusError as e:
+                last_err = e
+                body = e.response.text[:200] if e.response else ""
+                logger.warning(f"OpenAI attempt {attempt+1} failed: {e.response.status_code} {body}")
+                if attempt == 0 and e.response.status_code in (429, 500, 502, 503):
+                    await asyncio.sleep(2)
+                    continue
+                break
+            except Exception as e:
+                last_err = e
+                logger.warning(f"OpenAI attempt {attempt+1} failed: {e}")
+                break
+
+        return ModelResponse(
+            model="gpt-4o-mini", action="FAILED", confidence=0,
+            side="", reasoning=str(last_err), risk_level="high",
+            latency_ms=(time.time() - start) * 1000,
+        )
 
     async def _query_anthropic(self, prompt: str) -> ModelResponse:
         """Query Claude Haiku 4.5."""

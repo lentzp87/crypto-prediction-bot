@@ -466,13 +466,22 @@ class KalshiScanner:
     # ── Kalshi Per-Request Signing (RSA-PSS) ─────────────────
 
     def _load_private_key(self):
-        """Load RSA private key from PEM file (cached)."""
+        """Load RSA private key from PEM file or env var (cached)."""
         if not hasattr(self, '_private_key') or self._private_key is None:
             try:
-                key_path = self.settings.kalshi_private_key_path
-                with open(key_path, "rb") as f:
-                    self._private_key = serialization.load_pem_private_key(f.read(), password=None)
-                logger.info("Kalshi RSA key loaded successfully")
+                # Try env var first (for Render / cloud deployments)
+                import os
+                pem_env = os.environ.get("KALSHI_PRIVATE_KEY_PEM", "")
+                if pem_env:
+                    pem_bytes = pem_env.encode()
+                    self._private_key = serialization.load_pem_private_key(pem_bytes, password=None)
+                    logger.info("Kalshi RSA key loaded from env var")
+                else:
+                    # Fall back to file
+                    key_path = self.settings.kalshi_private_key_path
+                    with open(key_path, "rb") as f:
+                        self._private_key = serialization.load_pem_private_key(f.read(), password=None)
+                    logger.info("Kalshi RSA key loaded successfully")
             except FileNotFoundError:
                 logger.warning(f"RSA key not found at {self.settings.kalshi_private_key_path}")
                 self._private_key = None
