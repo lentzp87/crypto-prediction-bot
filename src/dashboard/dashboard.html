@@ -187,6 +187,10 @@
       <span class="stat-label">Signals Today</span>
       <span id="signals-today">--</span>
     </div>
+    <div class="stat-row">
+      <span class="stat-label">Contracts</span>
+      <span id="series-counts" style="font-size:0.7rem;color:#9ca3af">--</span>
+    </div>
   </div>
 
   <div class="card">
@@ -364,6 +368,9 @@
       document.getElementById('btc-price').textContent = fmtPrice(btc.price);
       document.getElementById('candle-count').textContent = btc.candle_count;
       document.getElementById('signals-today').textContent = btc.scanner?.signals_today || 0;
+      const sc = btc.scanner?.series_counts || {};
+      const scParts = Object.entries(sc).map(([k,v]) => k.replace('KX','') + ':' + v);
+      document.getElementById('series-counts').textContent = scParts.join(' | ') || 'waiting...';
 
       // Indicators
       const rsi = btc.rsi || 50;

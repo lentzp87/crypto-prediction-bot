@@ -150,6 +150,7 @@ class KalshiScanner:
         self.last_scan_time: float = 0
         self.contracts_found: int = 0
         self.signals_today: int = 0
+        self.series_counts: dict[str, int] = {}  # series → contract count from last scan
         self._discovered_series: list[tuple[str, str]] = []  # (series_ticker, asset_key)
         self._last_discovery: float = 0
         self._burst_scan_requested: bool = False
@@ -205,94 +206,52 @@ class KalshiScanner:
 
     async def _discover_series(self):
         """
-        Query Kalshi API for all open crypto markets and discover
-        available series tickers (15-min, hourly, daily for BTC/ETH).
+        Build the list of crypto series to scan.
+        Uses known series tickers and verifies which have active markets.
         """
         self._last_discovery = time.time()
 
-        # Fallback hardcoded series if API discovery fails
-        fallback = [
+        # All known crypto series we want to scan
+        known_series = [
             ("KXBTC15M", "BTC"),
-            ("KXBTCHR", "BTC"),      # hourly BTC
-            ("KXBTCD", "BTC"),       # daily BTC
+            ("KXBTCHR", "BTC"),
+            ("KXBTCD", "BTC"),
             ("KXETH15M", "ETH"),
-            ("KXETHHR", "ETH"),      # hourly ETH
-            ("KXETHD", "ETH"),       # daily ETH
+            ("KXETHHR", "ETH"),
+            ("KXETHD", "ETH"),
         ]
 
-        try:
-            if not self._client:
-                self._client = httpx.AsyncClient(timeout=20)
-
-            path = "/trade-api/v2/markets"
-            headers = self._sign_request("GET", path)
-
-            # Fetch a broad set of open crypto markets
-            resp = await self._client.get(
-                f"{self.settings.kalshi_base_url}{path}",
-                params={"status": "open", "limit": 200},
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-            # Extract unique series from market tickers
-            seen_series = set()
-            discovered = []
-            for market in data.get("markets", []):
-                ticker = market.get("ticker", "")
-                # Extract series prefix (everything before the first dash)
-                parts = ticker.split("-")
-                if len(parts) >= 2:
-                    series = parts[0]
-                    if series in seen_series:
-                        continue
-                    seen_series.add(series)
-
-                    # Map to asset engine
-                    asset_key = None
-                    for keyword, key in self.ASSET_MAP.items():
-                        if keyword in series.upper():
-                            asset_key = key
-                            break
-
-                    if asset_key and self.engines.get(asset_key):
-                        discovered.append((series, asset_key))
-
-            if discovered:
-                self._discovered_series = discovered
-                series_list = [f"{s}({a})" for s, a in discovered]
-                logger.info(f"Discovered {len(discovered)} series: {', '.join(series_list)}")
-            else:
-                # Use fallback — filter to engines we actually have
-                self._discovered_series = [
-                    (s, a) for s, a in fallback if self.engines.get(a)
-                ]
-                logger.info(f"Using fallback series: {[s for s,a in self._discovered_series]}")
-
-        except Exception as e:
-            logger.warning(f"Series discovery failed: {e} — using fallback")
-            self._discovered_series = [
-                (s, a) for s, a in fallback if self.engines.get(a)
-            ]
+        # Filter to engines we actually have running
+        self._discovered_series = [
+            (s, a) for s, a in known_series if self.engines.get(a)
+        ]
+        series_list = [f"{s}({a})" for s, a in self._discovered_series]
+        logger.info(f"Scanning {len(self._discovered_series)} series: {', '.join(series_list)}")
 
     # ── Scanning ───────────────────────────────────────────────
 
     async def _scan_once(self) -> list[TradeSignal]:
         """Fetch active contracts for all discovered series and evaluate each."""
         all_contracts = []
+        series_counts = []
 
         for series_ticker, asset_key in self._discovered_series:
             engine = self.engines.get(asset_key)
             if not engine or not engine.ready:
+                series_counts.append(f"{series_ticker}=no_engine")
+                self.series_counts[series_ticker] = 0
                 continue
             contracts = await self._fetch_contracts(series_ticker)
+            series_counts.append(f"{series_ticker}={len(contracts)}")
+            self.series_counts[series_ticker] = len(contracts)
             for c in contracts:
                 c._engine = engine
             all_contracts.extend(contracts)
 
         self.contracts_found = len(all_contracts)
         self.last_scan_time = time.time()
+
+        logger.info(f"Scan: {', '.join(series_counts)} → {len(all_contracts)} total contracts")
 
         signals = []
         for contract in all_contracts:
@@ -311,6 +270,8 @@ class KalshiScanner:
             )
             self.signals_today += len(top_signals)
             signals = top_signals
+        else:
+            logger.debug(f"No signals from {len(all_contracts)} contracts (all filtered)")
 
         return signals
 
@@ -360,9 +321,10 @@ class KalshiScanner:
 
                 # Skip contracts too close to expiry or already expired
                 if minutes_to_close < 2:
+                    logger.debug(f"Skip {ticker}: too close to expiry ({minutes_to_close:.1f} min)")
                     continue
-                # Skip contracts more than 24 hours out (too far)
-                if minutes_to_close > 1440:
+                # Skip contracts more than 48 hours out (too far)
+                if minutes_to_close > 2880:
                     continue
 
                 # Kalshi API v2 returns prices in dollars as strings
@@ -420,11 +382,16 @@ class KalshiScanner:
         # Skip extreme probabilities — these are deep OTM contracts where
         # both us and Kalshi agree it's ~0% or ~100%. Any "edge" is noise.
         if est.probability > 0.95 or est.probability < 0.05:
+            logger.debug(
+                f"Skip {contract.ticker}: extreme prob {est.probability:.1%} "
+                f"(strike={contract.strike_price:.0f}, {contract.minutes_to_close:.0f}min)"
+            )
             return None
 
         # Also skip if Kalshi price is at the extremes (1¢ or 99¢)
         # — no liquidity there and the edge is illusory
         if contract.yes_price <= 2 or contract.yes_price >= 98:
+            logger.debug(f"Skip {contract.ticker}: extreme price {contract.yes_price}¢")
             return None
 
         # Check YES side edge
@@ -433,6 +400,17 @@ class KalshiScanner:
         no_edge = ((1 - est.probability) - (contract.no_price / 100.0)) * 100
 
         min_edge = self.settings.min_edge_cents
+        best_edge = max(yes_edge, no_edge)
+        best_side = "yes" if yes_edge >= no_edge else "no"
+
+        # Log evaluation for all non-extreme contracts so we can see what's happening
+        if best_edge >= 1.0:  # only log if at least 1¢ edge to avoid noise
+            logger.info(
+                f"Edge {contract.ticker}: {best_side} {best_edge:+.1f}¢ "
+                f"(prob={est.probability:.0%}, mkt={contract.yes_price}¢, "
+                f"{contract.minutes_to_close:.0f}min) "
+                f"{'→ SIGNAL' if best_edge >= min_edge else '→ below min'}"
+            )
 
         signal = None
 
@@ -569,4 +547,5 @@ class KalshiScanner:
             "contracts_found": self.contracts_found,
             "signals_today": self.signals_today,
             "running": self._running,
+            "series_counts": dict(self.series_counts),
         }
