@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: crypto-prediction-bot
+    runtime: python
+    plan: starter       # Paid plan — persistent disk, always-on
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    disk:
+      name: bot-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 5
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - key: KALSHI_ENV
+        value: demo
+      - key: DASHBOARD_PORT
+        value: "10000"
+      - key: DASHBOARD_HOST
+        value: "0.0.0.0"
+      # Set these in Render dashboard (not in yaml):
+      # KALSHI_API_KEY, KALSHI_PRIVATE_KEY_PATH
+      # OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY
+      # NTFY_TOPIC

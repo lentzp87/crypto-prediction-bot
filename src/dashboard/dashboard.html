@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crypto Prediction Bot — Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    background: #0a0e17;
+    color: #e0e6ed;
+    padding: 16px;
+  }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #1e2a3a;
+  }
+  .header h1 { font-size: 18px; color: #00d4aa; }
+  .header .mode {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: bold;
+    text-transform: uppercase;
+  }
+  .mode-paper { background: #1a3a2a; color: #00d4aa; }
+  .mode-live { background: #3a1a1a; color: #ff4444; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .card {
+    background: #111827;
+    border: 1px solid #1e2a3a;
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card h3 {
+    font-size: 12px;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+  }
+  .big-number {
+    font-size: 32px;
+    font-weight: bold;
+    line-height: 1;
+  }
+  .positive { color: #00d4aa; }
+  .negative { color: #ff4444; }
+  .neutral { color: #6b7280; }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid #1a2030;
+    font-size: 13px;
+  }
+  .stat-row:last-child { border: none; }
+  .stat-label { color: #6b7280; }
+
+  .indicator-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0;
+    font-size: 13px;
+  }
+  .indicator-bar .label { width: 80px; color: #6b7280; }
+  .indicator-bar .bar {
+    flex: 1;
+    height: 6px;
+    background: #1a2030;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .indicator-bar .bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s;
+  }
+  .indicator-bar .value { width: 60px; text-align: right; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  th {
+    text-align: left;
+    padding: 8px 6px;
+    border-bottom: 1px solid #1e2a3a;
+    color: #6b7280;
+    font-weight: normal;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 1px;
+  }
+  td {
+    padding: 8px 6px;
+    border-bottom: 1px solid #0f1520;
+  }
+  tr:hover { background: #0f1a2a; }
+
+  .event-log {
+    max-height: 300px;
+    overflow-y: auto;
+    font-size: 12px;
+  }
+  .event {
+    padding: 6px 8px;
+    border-bottom: 1px solid #0f1520;
+    display: flex;
+    gap: 8px;
+  }
+  .event-type {
+    font-weight: bold;
+    width: 80px;
+    flex-shrink: 0;
+  }
+  .event-TRADE { color: #00d4aa; }
+  .event-EXIT { color: #fbbf24; }
+  .event-SKIP { color: #6b7280; }
+  .event-ERROR { color: #ff4444; }
+  .event-CIRCUIT_BREAKER { color: #ff6b35; }
+  .event-BURST { color: #e879f9; }
+  .event-AI { color: #60a5fa; }
+  .event-time { color: #4b5563; width: 70px; flex-shrink: 0; }
+
+  .pnl-chart {
+    width: 100%;
+    height: 150px;
+    position: relative;
+  }
+  .pnl-chart canvas { width: 100%; height: 100%; }
+
+  .status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+  }
+  .dot-green { background: #00d4aa; }
+  .dot-yellow { background: #fbbf24; }
+  .dot-red { background: #ff4444; }
+
+  .full-width { grid-column: 1 / -1; }
+  .two-col { grid-template-columns: 1fr 1fr; }
+
+  @media (max-width: 768px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Crypto Prediction Bot</h1>
+  <div>
+    <span id="status-dot" class="status-dot dot-yellow"></span>
+    <span id="uptime">--</span>
+    <span id="mode" class="mode mode-paper">PAPER</span>
+  </div>
+</div>
+
+<!-- Row 1: Key Metrics -->
+<div class="grid">
+  <div class="card">
+    <h3>BTC Price</h3>
+    <div id="btc-price" class="big-number">$--,---.--</div>
+    <div class="stat-row">
+      <span class="stat-label">Candles</span>
+      <span id="candle-count">--</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Signals Today</span>
+      <span id="signals-today">--</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Total P&L</h3>
+    <div id="total-pnl" class="big-number neutral">$0.00</div>
+    <div class="stat-row">
+      <span class="stat-label">Today</span>
+      <span id="today-pnl">$0.00</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Win Rate</span>
+      <span id="win-rate">--</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Trades</h3>
+    <div id="total-trades" class="big-number">0</div>
+    <div class="stat-row">
+      <span class="stat-label">Wins / Losses</span>
+      <span id="win-loss">0 / 0</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Open Positions</span>
+      <span id="open-count">0</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Bot Status</h3>
+    <div class="stat-row">
+      <span class="stat-label">Memory</span>
+      <span id="memory">-- MB</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">AI Cost (est)</span>
+      <span id="ai-cost">$0.0000</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Circuit Breaker</span>
+      <span id="circuit-breaker">Inactive</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Wallet</span>
+      <span id="wallet">$2,000</span>
+    </div>
+  </div>
+</div>
+
+<!-- Row 2: Indicators -->
+<div class="grid">
+  <div class="card">
+    <h3>Technical Indicators</h3>
+    <div class="indicator-bar">
+      <span class="label">RSI</span>
+      <div class="bar"><div id="rsi-bar" class="bar-fill" style="width:50%;background:#6b7280"></div></div>
+      <span id="rsi-val" class="value">50.0</span>
+    </div>
+    <div class="indicator-bar">
+      <span class="label">Momentum</span>
+      <div class="bar"><div id="mom-bar" class="bar-fill" style="width:50%;background:#6b7280"></div></div>
+      <span id="mom-val" class="value">0.00%</span>
+    </div>
+    <div class="indicator-bar">
+      <span class="label">Volatility</span>
+      <div class="bar"><div id="vol-bar" class="bar-fill" style="width:20%;background:#fbbf24"></div></div>
+      <span id="vol-val" class="value">0.00%</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">VWAP</span>
+      <span id="vwap">--</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">EMA 9 / 21</span>
+      <span id="emas">-- / --</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Bollinger</span>
+      <span id="bollinger">--</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Funding</span>
+      <span id="funding">--</span>
+    </div>
+  </div>
+
+  <!-- Open Positions -->
+  <div class="card">
+    <h3>Open Positions</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Contract</th>
+          <th>Side</th>
+          <th>Entry</th>
+          <th>Now</th>
+          <th>P&L</th>
+          <th>Age</th>
+        </tr>
+      </thead>
+      <tbody id="positions-body">
+        <tr><td colspan="6" style="text-align:center;color:#4b5563">No open positions</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Row 3: Event Log -->
+<div class="grid">
+  <div class="card full-width">
+    <h3>Event Log</h3>
+    <div id="event-log" class="event-log">
+      <div class="event"><span style="color:#4b5563">Waiting for events...</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const API_BASE = window.location.origin;
+  const POLL_MS = 5000;
+
+  function fmt(n, dec=2) { return n != null ? Number(n).toFixed(dec) : '--'; }
+  function fmtUsd(n) {
+    if (n == null) return '$0.00';
+    const s = Math.abs(n).toFixed(2);
+    return (n < 0 ? '-$' : '$') + s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  }
+  function fmtPrice(n) {
+    return n != null ? '$' + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',') : '--';
+  }
+  function timeAgo(ts) {
+    const s = Math.floor(Date.now()/1000 - ts);
+    if (s < 60) return s + 's ago';
+    if (s < 3600) return Math.floor(s/60) + 'm ago';
+    return Math.floor(s/3600) + 'h ago';
+  }
+  function shortTicker(t) {
+    // KXBTC15M-26APR070715-T68299.99 → T68299 07:15
+    const m = t.match(/-T([\d.]+)/);
+    const tm = t.match(/\d{2}[A-Z]{3}(\d{2})(\d{2})\d{2}-/);
+    if (m && tm) return 'T' + Math.floor(parseFloat(m[1])) + ' ' + tm[1]+':'+tm[2];
+    return t.substring(0, 20);
+  }
+
+  async function fetchJSON(path) {
+    try {
+      const r = await fetch(API_BASE + path);
+      return await r.json();
+    } catch { return null; }
+  }
+
+  async function poll() {
+    // Stats
+    const stats = await fetchJSON('/api/stats');
+    if (stats) {
+      const pnlEl = document.getElementById('total-pnl');
+      pnlEl.textContent = fmtUsd(stats.total_pnl);
+      pnlEl.className = 'big-number ' + (stats.total_pnl > 0 ? 'positive' : stats.total_pnl < 0 ? 'negative' : 'neutral');
+
+      document.getElementById('today-pnl').textContent = fmtUsd(stats.today_pnl);
+      document.getElementById('win-rate').textContent = fmt(stats.win_rate, 1) + '%';
+      document.getElementById('total-trades').textContent = stats.total;
+      document.getElementById('win-loss').textContent = stats.wins + ' / ' + stats.losses;
+      document.getElementById('open-count').textContent = stats.open_positions;
+      document.getElementById('circuit-breaker').textContent = stats.circuit_breaker_active ? 'ACTIVE' : 'Inactive';
+
+      const modeEl = document.getElementById('mode');
+      modeEl.textContent = stats.mode.toUpperCase();
+      modeEl.className = 'mode mode-' + stats.mode;
+    }
+
+    // BTC
+    const btc = await fetchJSON('/api/btc');
+    if (btc) {
+      document.getElementById('btc-price').textContent = fmtPrice(btc.price);
+      document.getElementById('candle-count').textContent = btc.candle_count;
+      document.getElementById('signals-today').textContent = btc.scanner?.signals_today || 0;
+
+      // Indicators
+      const rsi = btc.rsi || 50;
+      document.getElementById('rsi-val').textContent = fmt(rsi, 1);
+      const rsiBar = document.getElementById('rsi-bar');
+      rsiBar.style.width = rsi + '%';
+      rsiBar.style.background = rsi > 70 ? '#ff4444' : rsi < 30 ? '#00d4aa' : '#6b7280';
+
+      const mom = btc.momentum || 0;
+      document.getElementById('mom-val').textContent = fmt(mom, 3) + '%';
+      const momBar = document.getElementById('mom-bar');
+      momBar.style.width = Math.min(100, Math.abs(mom) * 50 + 50) + '%';
+      momBar.style.background = mom > 0 ? '#00d4aa' : mom < 0 ? '#ff4444' : '#6b7280';
+
+      const vol = btc.volatility_15m || 0;
+      document.getElementById('vol-val').textContent = fmt(vol, 4) + '%';
+      const volBar = document.getElementById('vol-bar');
+      volBar.style.width = Math.min(100, vol * 100) + '%';
+      volBar.style.background = '#fbbf24';
+
+      document.getElementById('vwap').textContent = fmtPrice(btc.vwap);
+      document.getElementById('emas').textContent = fmtPrice(btc.ema9) + ' / ' + fmtPrice(btc.ema21);
+      document.getElementById('bollinger').textContent = fmtPrice(btc.bollinger_lower) + ' — ' + fmtPrice(btc.bollinger_upper);
+      document.getElementById('funding').textContent = fmt(btc.funding_rate, 6) + '%';
+
+      const dot = document.getElementById('status-dot');
+      dot.className = 'status-dot ' + (btc.ready ? 'dot-green' : 'dot-yellow');
+    }
+
+    // Positions
+    const positions = await fetchJSON('/api/positions');
+    const tbody = document.getElementById('positions-body');
+    if (positions && positions.length > 0) {
+      tbody.innerHTML = positions.map(p => `
+        <tr>
+          <td>${shortTicker(p.ticker)}</td>
+          <td>${p.side.toUpperCase()}</td>
+          <td>${p.entry_cents}¢</td>
+          <td>${p.current_cents}¢</td>
+          <td class="${p.unrealized_pnl >= 0 ? 'positive' : 'negative'}">${fmtUsd(p.unrealized_pnl)}</td>
+          <td>${fmt(p.age_min, 0)}m</td>
+        </tr>
+      `).join('');
+    } else {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#4b5563">No open positions</td></tr>';
+    }
+
+    // Events
+    const events = await fetchJSON('/api/events');
+    const logEl = document.getElementById('event-log');
+    if (events && events.length > 0) {
+      logEl.innerHTML = events.slice(0, 50).map(e => `
+        <div class="event">
+          <span class="event-time">${timeAgo(e.timestamp)}</span>
+          <span class="event-type event-${e.type}">${e.type}</span>
+          <span>${e.detail || ''}</span>
+        </div>
+      `).join('');
+    }
+
+    // Status
+    const status = await fetchJSON('/api/status');
+    if (status) {
+      document.getElementById('uptime').textContent = status.uptime;
+      document.getElementById('memory').textContent = status.memory_mb + ' MB';
+      document.getElementById('ai-cost').textContent = '$' + fmt(status.ai_validator?.estimated_cost || 0, 4);
+      document.getElementById('wallet').textContent = fmtUsd(status.wallet_size);
+    }
+  }
+
+  // Poll immediately then every 5s
+  poll();
+  setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Environment & secrets
+.env
+keys/
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Database (will be on Render's persistent disk)
+data/*.db
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
