@@ -43,24 +43,32 @@ class ConsensusResult:
     active_count: int
 
 
-VALIDATION_PROMPT = """You are a crypto prediction market analyst. Evaluate this BTC contract:
+VALIDATION_PROMPT = """You are a quantitative crypto trading analyst evaluating a binary prediction market trade.
 
-Contract: {ticker} — Will BTC be above ${strike} at {close_time}?
-Current BTC: ${current_price}
-Time to close: {minutes:.1f} minutes
-Our probability estimate: {probability:.1f}%
-Kalshi {side} price: {price}¢ (implied {implied:.1f}%)
-Edge detected: {edge:.1f}¢
+MARKET DATA:
+- Contract: {ticker}
+- Question: Will BTC be above ${strike} at expiry?
+- Current BTC price: ${current_price}
+- Time to expiry: {minutes:.1f} minutes
+- Our model's probability: {probability:.1f}%
+- Market price ({side}): {price}¢ (implied probability: {implied:.1f}%)
+- Detected edge: {edge:.1f}¢
 
-Technical indicators:
-- RSI: {rsi} | Momentum: {momentum}% | Volatility: {vol}%
-- Bollinger: {bb_position} | Funding: {funding_rate}%
+TECHNICAL INDICATORS:
+- RSI(14): {rsi} | Momentum: {momentum}% | 15-min Volatility: {vol}%
+- Bollinger position: {bb_position} | Funding rate: {funding_rate}%
 - VWAP: ${vwap} | EMA9: ${ema9} | EMA21: ${ema21}
 
-Should we BUY {side} on this contract?
+EVALUATION CRITERIA — answer FOLLOW only if ALL are true:
+1. The edge ({edge:.1f}¢) is genuine, not just model noise
+2. The time to expiry gives enough room for the trade to work
+3. Technical indicators support the direction (not fighting the trend)
+4. The risk/reward ratio is favorable at the current price
 
-Respond with ONLY valid JSON (no markdown, no code blocks):
-{{"action": "FOLLOW" or "SKIP", "confidence": 0.0-1.0, "side": "{side}", "reasoning": "brief explanation", "risk_level": "low" or "medium" or "high"}}"""
+If ANY criterion fails, answer SKIP.
+
+Respond with ONLY valid JSON (no markdown):
+{{"action": "FOLLOW" or "SKIP", "confidence": 0.0-1.0, "side": "{side}", "reasoning": "one sentence", "risk_level": "low" or "medium" or "high"}}"""
 
 
 class AIValidator:
