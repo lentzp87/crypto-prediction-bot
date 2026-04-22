@@ -43,7 +43,7 @@ class ConsensusResult:
     active_count: int
 
 
-VALIDATION_PROMPT = """You are a crypto prediction market trader. Your job is to decide whether a detected edge is worth trading. You are naturally AGGRESSIVE — you want to trade when the math is good.
+VALIDATION_PROMPT = """You are a cautious crypto prediction market trader. Your job is to evaluate whether a detected edge is REAL and worth risking money on. You are naturally SKEPTICAL — most "edges" are noise.
 
 SIGNAL:
 - Contract: {ticker}
@@ -56,13 +56,16 @@ TECHNICALS:
 - RSI: {rsi} | Momentum: {momentum}% | Volatility: {vol}%
 - VWAP: ${vwap} | EMA9/21: ${ema9}/${ema21} | Funding: {funding_rate}%
 
-DECISION FRAMEWORK:
-- Edge >= 5¢ with reasonable technicals → lean FOLLOW
-- Edge >= 10¢ → strong FOLLOW unless technicals clearly contradict
-- Only SKIP if: edge is tiny (<3¢), technicals strongly oppose the trade, or time is too short (<2 min)
-- Risk management (position sizing, stop losses) is handled separately — your job is just signal quality
+DECISION FRAMEWORK — be selective, only trade high-conviction setups:
+- SKIP if edge < 5¢ — not worth the spread and slippage
+- SKIP if technicals contradict the trade direction (e.g. bearish momentum on a YES bet)
+- SKIP if time to expiry < 3 minutes — too risky
+- SKIP if volatility is very low and edge is small — price unlikely to move enough
+- FOLLOW only if: edge >= 5¢ AND technicals support or are neutral AND time >= 3 min
+- Edge >= 10¢ with supporting technicals → higher confidence FOLLOW
+- When in doubt, SKIP — preserving capital is more important than catching every trade
 
-We have a {side} position. Does the edge justify the trade?
+We have a {side} position. Is this a HIGH-CONVICTION setup worth risking real money?
 
 Respond with ONLY valid JSON (no markdown):
 {{"action": "FOLLOW" or "SKIP", "confidence": 0.0-1.0, "side": "{side}", "reasoning": "one sentence", "risk_level": "low" or "medium" or "high"}}"""
@@ -157,11 +160,9 @@ class AIValidator:
 
     def _calculate_consensus(self, models: list[ModelResponse], default_side: str) -> ConsensusResult:
         """
-        Consensus rules:
-        - 3 active → 2 must agree FOLLOW
-        - 2 active → both must agree FOLLOW
-        - 1 active → SKIP (not enough coverage)
-        - 0 active → SKIP
+        Consensus rules (strict — quality over quantity):
+        - 3 active + ALL 3 FOLLOW → FOLLOW (unanimous only)
+        - Anything else → SKIP
         """
         active = [m for m in models if m.action in ("FOLLOW", "SKIP")]
         follow = [m for m in active if m.action == "FOLLOW"]
@@ -170,11 +171,9 @@ class AIValidator:
         action = "SKIP"
         n = len(active)
 
-        if n >= 3 and len(follow) >= 2:
+        # Require all 3 models active AND all 3 agree FOLLOW
+        if n >= 3 and len(follow) >= 3:
             action = "FOLLOW"
-        elif n == 2 and len(follow) >= 2:
-            action = "FOLLOW"
-        # 1 active model is not enough — skip
 
         # Average confidence of agreeing models
         if follow and action == "FOLLOW":

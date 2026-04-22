@@ -178,19 +178,20 @@ class Trader:
                 count = int(abs(pos_fp))
                 side = "yes" if pos_fp > 0 else "no"
 
-                # Skip if we already track this ticker+side (prevents duplication across restarts)
+                # Skip if we already track this ticker+side (prevents duplication)
+                # Check BOTH the pre-loop set AND positions added during this loop
                 if (ticker, side) in already_tracked:
                     logger.info(f"Skipping already-tracked position: {ticker} {side}")
                     continue
+
+                # Mark as tracked NOW so duplicates later in the same loop are caught
+                already_tracked.add((ticker, side))
 
                 # Calculate average entry price
                 if count > 0:
                     entry_cents = int((exposure / count) * 100)
                 else:
                     entry_cents = 50
-
-                # Use a synthetic trade_id (negative to distinguish from DB trades)
-                trade_id = -(synced + 1)
 
                 # Record in DB so it persists
                 trade_id = self.db.record_trade(
@@ -292,19 +293,11 @@ class Trader:
         # ── Price sanity: reject bad risk/reward ──────────────
         entry_cents = int(signal.kalshi_implied * 100)
 
-        # NO contracts above 45¢ are terrible risk/reward — you risk 45+¢ to win <55¢
-        # The bot was buying NO at 60-88¢ and getting wiped out
-        if signal.side == "no" and entry_cents > 45:
-            return f"NO price too high ({entry_cents}¢ > 45¢ cap) — bad risk/reward"
-
-        # YES contracts above 85¢ also bad — paying 85+¢ to win <15¢
-        if signal.side == "yes" and entry_cents > 85:
-            return f"YES price too high ({entry_cents}¢ > 85¢ cap) — bad risk/reward"
-
-        # Cheap contracts (<10¢) are almost certainly losing bets —
-        # the 6-8¢ NO trades on deep OTM strikes were burning money
-        if entry_cents < 10:
-            return f"Price too low ({entry_cents}¢) — likely to expire worthless"
+        # Only trade 35-65¢ range — genuinely contested, near the money
+        if entry_cents < 35:
+            return f"Price too low ({entry_cents}¢ < 35¢) — longshot"
+        if entry_cents > 65:
+            return f"Price too high ({entry_cents}¢ > 65¢) — bad risk/reward"
 
         # ── Duplicate ticker check: NEVER buy a contract we already hold ──
         # This prevents position stacking across restarts

@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     max_daily_loss_usd: float = 200.0       # hard stop at -$200
     max_positions: int = 16
     max_trades_per_day: int = 9999          # unlimited — daily loss limit is the real guard
-    min_edge_cents: float = 3.0
+    min_edge_cents: float = 5.0
     max_single_trade_usd: float = 23.0      # ~5% of wallet
     circuit_breaker_losses: int = 5         # consecutive losses → pause
     circuit_breaker_pause_min: int = 10     # minutes to pause (was 30, too long)

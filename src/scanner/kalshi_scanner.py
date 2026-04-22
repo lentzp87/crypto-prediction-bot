@@ -394,11 +394,11 @@ class KalshiScanner:
             )
             return None
 
-        # Skip if Kalshi price is at the extremes — no liquidity, edge is illusory
-        # YES >= 90¢ means NO <= 10¢ (deep OTM NO bets are almost always losers)
-        # YES <= 10¢ means market says <10% chance (deep OTM YES bets)
-        if contract.yes_price <= 10 or contract.yes_price >= 90:
-            logger.debug(f"Skip {contract.ticker}: extreme price {contract.yes_price}¢")
+        # Only trade contracts in the 35-65¢ range — genuinely contested strikes.
+        # Cheap contracts are longshots (16% win rate historically).
+        # Expensive contracts have bad risk/reward.
+        if contract.yes_price < 35 or contract.yes_price > 65:
+            logger.debug(f"Skip {contract.ticker}: price {contract.yes_price}¢ outside 35-65¢ range")
             return None
 
         # Check YES side edge
