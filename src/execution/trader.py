@@ -463,8 +463,8 @@ class Trader:
             headers = self._sign_request("POST", path)
             headers["Content-Type"] = "application/json"
 
-            # Sell at current market price (fill_or_kill)
-            exit_cents = pos.current_price_cents
+            # For sells, price LOWER to cross the spread (accept the bid)
+            exit_cents = max(1, pos.current_price_cents - 2)
             order_body = {
                 "ticker": pos.ticker,
                 "action": "sell",
@@ -651,13 +651,17 @@ class Trader:
         exit_price = pos.current_price_cents
 
         # For live positions, place a sell order on Kalshi
-        if pos.mode == "live" and "settlement" not in reason:
+        # Skip selling if price is near settlement (99¢/1¢) — let Kalshi auto-settle
+        near_settlement = exit_price >= 97 or exit_price <= 3
+        if pos.mode == "live" and not near_settlement and "settlement" not in reason:
             result = await self._live_close(pos)
             if result is None:
                 # Sell failed — put position back and retry next cycle
                 self.positions[trade_id] = pos
                 self._log_event("WARN", pos.ticker, f"Close failed ({reason}), will retry")
                 return
+        elif pos.mode == "live" and near_settlement:
+            self._log_event("EXIT", pos.ticker, f"Near settlement ({exit_price}¢) — letting Kalshi auto-settle")
 
         pnl_per_contract = (exit_price - pos.entry_price_cents) / 100.0
         pnl = pnl_per_contract * pos.count
