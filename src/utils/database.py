@@ -15,7 +15,7 @@ from typing import Optional
 
 from sqlalchemy import (
     create_engine, Column, Integer, Float, Text, String,
-    JSON, TIMESTAMP, func
+    JSON, TIMESTAMP, func, text
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -105,8 +105,26 @@ class Database:
         os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else ".", exist_ok=True)
         self.engine = create_engine(f"sqlite:///{db_path}", echo=False)
         Base.metadata.create_all(self.engine)
+        self._migrate()
         self.SessionLocal = sessionmaker(bind=self.engine)
         logger.info(f"Database initialized at {db_path}")
+
+    def _migrate(self):
+        """Add new columns to existing tables if they don't exist yet."""
+        new_columns = [
+            ("trades", "follow_count", "INTEGER"),
+            ("trades", "active_count", "INTEGER"),
+            ("trades", "avg_confidence", "REAL"),
+            ("trades", "edge_cents", "REAL"),
+        ]
+        with self.engine.connect() as conn:
+            for table, col, col_type in new_columns:
+                try:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+                    conn.commit()
+                    logger.info(f"Migration: added {table}.{col}")
+                except Exception:
+                    pass  # column already exists
 
     def _session(self) -> Session:
         return self.SessionLocal()
