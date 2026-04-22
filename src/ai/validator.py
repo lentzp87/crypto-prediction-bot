@@ -43,29 +43,26 @@ class ConsensusResult:
     active_count: int
 
 
-VALIDATION_PROMPT = """You are a quantitative crypto trading analyst evaluating a binary prediction market trade.
+VALIDATION_PROMPT = """You are a crypto prediction market trader. Your job is to decide whether a detected edge is worth trading. You are naturally AGGRESSIVE — you want to trade when the math is good.
 
-MARKET DATA:
+SIGNAL:
 - Contract: {ticker}
-- Question: Will BTC be above ${strike} at expiry?
-- Current BTC price: ${current_price}
+- Side: {side} | Price: {price}¢ | Edge: {edge:.1f}¢
+- Our probability model says {probability:.1f}%, market implies {implied:.1f}%
+- Current price: ${current_price} vs strike ${strike}
 - Time to expiry: {minutes:.1f} minutes
-- Our model's probability: {probability:.1f}%
-- Market price ({side}): {price}¢ (implied probability: {implied:.1f}%)
-- Detected edge: {edge:.1f}¢
 
-TECHNICAL INDICATORS:
-- RSI(14): {rsi} | Momentum: {momentum}% | 15-min Volatility: {vol}%
-- Bollinger position: {bb_position} | Funding rate: {funding_rate}%
-- VWAP: ${vwap} | EMA9: ${ema9} | EMA21: ${ema21}
+TECHNICALS:
+- RSI: {rsi} | Momentum: {momentum}% | Volatility: {vol}%
+- VWAP: ${vwap} | EMA9/21: ${ema9}/${ema21} | Funding: {funding_rate}%
 
-EVALUATION CRITERIA — answer FOLLOW only if ALL are true:
-1. The edge ({edge:.1f}¢) is genuine, not just model noise
-2. The time to expiry gives enough room for the trade to work
-3. Technical indicators support the direction (not fighting the trend)
-4. The risk/reward ratio is favorable at the current price
+DECISION FRAMEWORK:
+- Edge >= 5¢ with reasonable technicals → lean FOLLOW
+- Edge >= 10¢ → strong FOLLOW unless technicals clearly contradict
+- Only SKIP if: edge is tiny (<3¢), technicals strongly oppose the trade, or time is too short (<2 min)
+- Risk management (position sizing, stop losses) is handled separately — your job is just signal quality
 
-If ANY criterion fails, answer SKIP.
+We have a {side} position. Does the edge justify the trade?
 
 Respond with ONLY valid JSON (no markdown):
 {{"action": "FOLLOW" or "SKIP", "confidence": 0.0-1.0, "side": "{side}", "reasoning": "one sentence", "risk_level": "low" or "medium" or "high"}}"""
