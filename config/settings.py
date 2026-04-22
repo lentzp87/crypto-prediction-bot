@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     # ── Risk Management ($465 bankroll) ─────────────────────────
     wallet_size_usd: float = 465.0
     max_daily_loss_usd: float = 200.0       # hard stop at -$200
-    max_positions: int = 8
+    max_positions: int = 16
     max_trades_per_day: int = 9999          # unlimited — daily loss limit is the real guard
     min_edge_cents: float = 3.0
     max_single_trade_usd: float = 23.0      # ~5% of wallet
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     # ── Position Limits ────────────────────────────────────────
     max_same_strike: int = 2                # max positions on same strike
-    max_same_window: int = 3                # max positions expiring in same 15-min window
+    max_same_window: int = 6                # max positions expiring in same 15-min window
     cooldown_seconds: int = 120             # between trades on same contract series
 
     # ── Sizing (Kelly-lite, scaled for $465) ───────────────────
