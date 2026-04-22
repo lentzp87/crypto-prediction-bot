@@ -51,10 +51,22 @@ class Indicators:
     momentum: float = 0.0          # 5-candle % change
     ema9: float = 0.0
     ema21: float = 0.0
-    volatility_15m: float = 0.0    # annualized vol scaled to 15-min
+    volatility_15m: float = 0.0    # OLD simple vol (kept for dashboard display)
     funding_rate: float = 0.0
     candle_count: int = 0
     last_update: float = 0.0
+
+    # ── HAR volatility model ──────────────────────────────────
+    har_vol_forecast: float = 0.0   # HAR-predicted vol for next period (%)
+    rv_short: float = 0.0           # realized vol, last 5 min
+    rv_medium: float = 0.0          # realized vol, last 30 min
+    rv_long: float = 0.0            # realized vol, last 120 min
+
+    # ── Jump detection ─────────────────────────────────────────
+    jump_active: bool = False       # True if recent jump detected
+    jump_intensity: float = 0.0     # how many std devs the jump was
+    jumps_last_hour: int = 0        # count of jumps in last 60 candles
+    jump_vol_multiplier: float = 1.0  # vol inflation factor from jumps
 
     @property
     def bb_position(self) -> str:
@@ -138,19 +150,28 @@ class BTCEngine:
         Estimate probability that BTC will be ABOVE strike_price
         at close time (minutes_to_close minutes from now).
 
-        Uses PURE volatility-scaled normal CDF.
+        Uses HAR volatility forecast + jump-adjusted normal CDF.
 
-        IMPORTANT: We do NOT adjust for momentum/RSI/BB/funding anymore.
-        Those indicators are already reflected in the current price, and
-        adding them double-counts the information — creating phantom edges
-        that led to a 16.7% win rate. The market already prices in technicals.
+        The HAR model forecasts volatility using three time horizons:
+          - Short (5 min): captures current regime
+          - Medium (30 min): captures session trend
+          - Long (120 min): captures baseline level
 
-        The only real edge source is if our volatility estimate differs
-        from the market's implied volatility.
+        Jump detection inflates vol when large moves are detected,
+        because normal CDF systematically underprices tail risk
+        during jump events (BTC averages ~3.5 jumps/day).
+
+        NO indicator adjustments (momentum/RSI/BB) — those double-count
+        information already in the current price.
         """
         current = self.price
-        if current == 0 or self.indicators.volatility_15m == 0:
-            # NOT READY — return sentinel so scanner skips this contract.
+        har_vol = self.indicators.har_vol_forecast
+        old_vol = self.indicators.volatility_15m
+
+        # Use HAR forecast if available, fall back to simple vol
+        base_vol = har_vol if har_vol > 0 else old_vol
+
+        if current == 0 or base_vol == 0:
             return ProbabilityEstimate(
                 probability=-1.0, base_prob=0,
                 momentum_adj=0, rsi_adj=0, bb_adj=0, funding_adj=0,
@@ -160,10 +181,15 @@ class BTCEngine:
         # Distance from strike
         distance = current - strike_price
 
+        # Apply jump vol multiplier
+        # During jump events, inflate vol to account for fat tails
+        jump_mult = self.indicators.jump_vol_multiplier
+        adjusted_vol = base_vol * jump_mult
+
         # Scale volatility to time remaining
-        vol_15m = self.indicators.volatility_15m
-        time_scale = math.sqrt(max(minutes_to_close, 0.5) / 15.0)
-        scaled_vol = vol_15m * time_scale
+        # HAR forecast is calibrated to ~5-min RV, scale to contract horizon
+        time_scale = math.sqrt(max(minutes_to_close, 0.5) / 5.0)
+        scaled_vol = adjusted_vol * time_scale
         price_std = current * (scaled_vol / 100.0)
 
         if price_std < 0.01:
@@ -173,17 +199,22 @@ class BTCEngine:
         z_score = distance / price_std
         base_prob = NORM.cdf(z_score)
 
-        # ── NO indicator adjustments ──────────────────────────
-        # Previous version added momentum, RSI, BB, funding adjustments
-        # that double-counted information already in the current price.
-        # This created systematic phantom edges and a 16.7% win rate.
-        # Pure vol model lets us find genuine vol mispricings only.
+        # No indicator adjustments — pure vol model
         momentum_adj = 0.0
         rsi_adj = 0.0
         bb_adj = 0.0
         funding_adj = 0.0
 
         probability = max(0.01, min(0.99, base_prob))
+
+        # Log jump info when it matters
+        if self.indicators.jump_active:
+            logger.info(
+                f"JUMP ACTIVE: intensity={self.indicators.jump_intensity:.1f}σ, "
+                f"multiplier={jump_mult:.2f}x, "
+                f"jumps_1h={self.indicators.jumps_last_hour}, "
+                f"vol {base_vol:.3f}%→{adjusted_vol:.3f}%"
+            )
 
         return ProbabilityEstimate(
             probability=probability,
@@ -407,15 +438,91 @@ class BTCEngine:
         if len(closes) >= 21:
             ind.ema21 = self._calc_ema(closes, 21)
 
-        # Volatility (15-candle, annualized, scaled to 15-min)
-        if len(closes) >= 16:
-            window = closes[-16:]
-            returns = np.diff(np.log(window))
-            std_1m = float(np.std(returns, ddof=1))
-            # Annualize: std * sqrt(minutes per year / 1)
-            # Then scale to 15-min window: annualized * sqrt(15 / 525600)
-            # Simpler: 15-min vol = std_1m * sqrt(15) as a percentage
+        # ── HAR Volatility Model ──────────────────────────────────
+        # Heterogeneous Autoregressive: decomposes realized vol into
+        # short (5-min), medium (30-min), long (120-min) components.
+        # Forecast = w0 + w1*RV_short + w2*RV_medium + w3*RV_long
+        #
+        # This captures the empirical fact that vol at different
+        # timescales has different persistence and predictive power.
+        all_returns = np.diff(np.log(closes)) if len(closes) >= 2 else np.array([])
+
+        if len(all_returns) >= 5:
+            # Realized variance components (sum of squared log returns)
+            rv_5 = float(np.sum(all_returns[-5:] ** 2))
+            ind.rv_short = math.sqrt(rv_5) * 100.0  # as %
+
+            rv_30 = float(np.sum(all_returns[-min(30, len(all_returns)):] ** 2))
+            n_30 = min(30, len(all_returns))
+            ind.rv_medium = math.sqrt(rv_30 * 5 / n_30) * 100.0  # scaled to 5-min equiv
+
+            rv_120 = float(np.sum(all_returns ** 2))
+            n_120 = len(all_returns)
+            ind.rv_long = math.sqrt(rv_120 * 5 / n_120) * 100.0  # scaled to 5-min equiv
+
+            # HAR forecast: weighted combination
+            # Weights tuned for crypto's fast-decaying autocorrelation:
+            # - Heavy on short-term (most recent vol is most predictive)
+            # - Medium on medium-term (30-min regime)
+            # - Light on long-term (baseline level)
+            w_short = 0.5
+            w_medium = 0.3
+            w_long = 0.2
+            har_forecast = (w_short * ind.rv_short +
+                           w_medium * ind.rv_medium +
+                           w_long * ind.rv_long)
+            ind.har_vol_forecast = har_forecast
+
+            # Keep old volatility_15m for backward compat / dashboard
+            if len(all_returns) >= 15:
+                std_1m = float(np.std(all_returns[-15:], ddof=1))
+                ind.volatility_15m = std_1m * math.sqrt(15) * 100.0
+            else:
+                ind.volatility_15m = har_forecast
+
+        elif len(all_returns) >= 2:
+            # Fallback: simple vol when not enough data for HAR
+            std_1m = float(np.std(all_returns, ddof=1))
             ind.volatility_15m = std_1m * math.sqrt(15) * 100.0
+            ind.har_vol_forecast = ind.volatility_15m
+
+        # ── Jump Detection ─────────────────────────────────────────
+        # A "jump" = 1-min return > 3 standard deviations.
+        # When jumps are present, normal CDF underestimates tail risk,
+        # so we inflate the vol estimate.
+        if len(all_returns) >= 20:
+            rolling_std = float(np.std(all_returns[-20:], ddof=1))
+            jump_threshold = 3.0 * rolling_std if rolling_std > 0 else 1e-6
+
+            # Check last candle for jump
+            last_return = abs(float(all_returns[-1]))
+            if last_return > jump_threshold and rolling_std > 0:
+                ind.jump_active = True
+                ind.jump_intensity = last_return / rolling_std
+            else:
+                ind.jump_active = False
+                ind.jump_intensity = 0.0
+
+            # Count jumps in available history (up to 60 candles)
+            lookback = min(60, len(all_returns))
+            recent = all_returns[-lookback:]
+            jump_count = int(np.sum(np.abs(recent) > jump_threshold))
+            ind.jumps_last_hour = jump_count
+
+            # Vol inflation: more jumps = fatter tails = higher effective vol
+            # Base: 1.0 (no jumps). Each recent jump adds ~15% vol.
+            # Active jump (just happened) adds extra 30%.
+            multiplier = 1.0
+            if jump_count > 0:
+                multiplier += 0.15 * min(jump_count, 5)  # cap at 5 jumps worth
+            if ind.jump_active:
+                multiplier += 0.30
+            ind.jump_vol_multiplier = min(multiplier, 2.5)  # cap at 2.5x
+        else:
+            ind.jump_active = False
+            ind.jump_intensity = 0.0
+            ind.jumps_last_hour = 0
+            ind.jump_vol_multiplier = 1.0
 
         # Funding rate (updated by separate poller)
         ind.funding_rate = self.funding_rate
@@ -470,4 +577,14 @@ class BTCEngine:
             "candle_count": ind.candle_count,
             "last_update": ind.last_update,
             "ready": self.ready,
+            # HAR volatility model
+            "har_vol_forecast": round(ind.har_vol_forecast, 4),
+            "rv_short": round(ind.rv_short, 4),
+            "rv_medium": round(ind.rv_medium, 4),
+            "rv_long": round(ind.rv_long, 4),
+            # Jump detection
+            "jump_active": ind.jump_active,
+            "jump_intensity": round(ind.jump_intensity, 2),
+            "jumps_last_hour": ind.jumps_last_hour,
+            "jump_vol_multiplier": round(ind.jump_vol_multiplier, 2),
         }
