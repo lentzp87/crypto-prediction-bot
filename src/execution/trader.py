@@ -310,10 +310,18 @@ class Trader:
             if p.ticker == signal.ticker and p.side == signal.side:
                 return f"Already holding {signal.ticker} {signal.side}"
 
-        # Daily loss limit
+        # Daily loss limit — use real Kalshi balance if available,
+        # because DB P&L can be poisoned by phantom losses from bugs
         today = self.db.get_today_stats(mode=self.mode)
-        if today["today_pnl"] <= -self.settings.max_daily_loss_usd:
-            return f"Daily loss limit reached (${today['today_pnl']:.2f})"
+        if self.mode == "live" and self.kalshi_cash > 0:
+            # Real P&L from actual Kalshi balance vs starting bankroll
+            real_total = self.kalshi_cash + self.kalshi_portfolio
+            real_pnl = real_total - self.settings.wallet_size_usd
+            if real_pnl <= -self.settings.max_daily_loss_usd:
+                return f"Daily loss limit reached (real P&L: ${real_pnl:.2f})"
+        else:
+            if today["today_pnl"] <= -self.settings.max_daily_loss_usd:
+                return f"Daily loss limit reached (${today['today_pnl']:.2f})"
 
         # Daily trade count
         if today["today_trades"] >= self.settings.max_trades_per_day:
