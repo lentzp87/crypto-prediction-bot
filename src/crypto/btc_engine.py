@@ -138,13 +138,19 @@ class BTCEngine:
         Estimate probability that BTC will be ABOVE strike_price
         at close time (minutes_to_close minutes from now).
 
-        Uses volatility-scaled normal CDF + indicator adjustments.
+        Uses PURE volatility-scaled normal CDF.
+
+        IMPORTANT: We do NOT adjust for momentum/RSI/BB/funding anymore.
+        Those indicators are already reflected in the current price, and
+        adding them double-counts the information — creating phantom edges
+        that led to a 16.7% win rate. The market already prices in technicals.
+
+        The only real edge source is if our volatility estimate differs
+        from the market's implied volatility.
         """
         current = self.price
         if current == 0 or self.indicators.volatility_15m == 0:
             # NOT READY — return sentinel so scanner skips this contract.
-            # Old behavior returned 0.5 which created phantom 30¢+ "edges"
-            # on every contract after restart before vol was computed.
             return ProbabilityEstimate(
                 probability=-1.0, base_prob=0,
                 momentum_adj=0, rsi_adj=0, bb_adj=0, funding_adj=0,
@@ -167,42 +173,17 @@ class BTCEngine:
         z_score = distance / price_std
         base_prob = NORM.cdf(z_score)
 
-        # ── Adjustment factors (each capped at ±8%) ──────────
-
-        # Momentum: 5-candle price change × 0.02
-        momentum_adj = max(-0.08, min(0.08, self.indicators.momentum * 0.02))
-
-        # RSI
-        rsi = self.indicators.rsi
+        # ── NO indicator adjustments ──────────────────────────
+        # Previous version added momentum, RSI, BB, funding adjustments
+        # that double-counted information already in the current price.
+        # This created systematic phantom edges and a 16.7% win rate.
+        # Pure vol model lets us find genuine vol mispricings only.
+        momentum_adj = 0.0
         rsi_adj = 0.0
-        if rsi > 75:
-            rsi_adj = -0.03
-        elif rsi > 70:
-            rsi_adj = -0.015
-        elif rsi < 25:
-            rsi_adj = 0.03
-        elif rsi < 30:
-            rsi_adj = 0.015
-
-        # Bollinger Bands
         bb_adj = 0.0
-        bb_pos = self.indicators.bb_position
-        if bb_pos == "above_upper":
-            bb_adj = -0.03
-        elif bb_pos == "below_lower":
-            bb_adj = 0.03
-
-        # Funding rate
         funding_adj = 0.0
-        fr = self.indicators.funding_rate
-        if fr > 0.0005 and distance > 0:
-            funding_adj = 0.01       # bullish + above strike
-        elif fr < -0.0005 and distance < 0:
-            funding_adj = -0.01      # bearish + below strike
 
-        # Combine
-        probability = base_prob + momentum_adj + rsi_adj + bb_adj + funding_adj
-        probability = max(0.01, min(0.99, probability))
+        probability = max(0.01, min(0.99, base_prob))
 
         return ProbabilityEstimate(
             probability=probability,

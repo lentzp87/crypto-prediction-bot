@@ -410,11 +410,18 @@ class KalshiScanner:
         best_edge = max(yes_edge, no_edge)
         best_side = "yes" if yes_edge >= no_edge else "no"
 
+        # Compute implied vol from market price for comparison
+        # Market says yes_price¢ → implied_prob = yes_price/100
+        # Our vol model gives est.scaled_vol. If they differ, that's real edge.
+        mkt_prob = contract.implied_probability
+        our_vol = est.scaled_vol  # our vol estimate for this time window
+
         # Log evaluation for all non-extreme contracts so we can see what's happening
         if best_edge >= 1.0:  # only log if at least 1¢ edge to avoid noise
             logger.info(
                 f"Edge {contract.ticker}: {best_side} {best_edge:+.1f}¢ "
-                f"(prob={est.probability:.0%}, mkt={contract.yes_price}¢, "
+                f"(prob={est.probability:.0%}, mkt={mkt_prob:.0%}, "
+                f"our_vol={our_vol:.3f}%, z={est.z_score:+.2f}, "
                 f"{contract.minutes_to_close:.0f}min) "
                 f"{'→ SIGNAL' if best_edge >= min_edge else '→ below min'}"
             )
