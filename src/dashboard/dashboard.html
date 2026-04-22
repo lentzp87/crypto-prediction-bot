@@ -235,7 +235,7 @@
   </div>
 
   <div class="card">
-    <h3>Total P&L</h3>
+    <h3>Bot P&L (tracked)</h3>
     <div id="total-pnl" class="big-number neutral">$0.00</div>
     <div class="stat-row">
       <span class="stat-label">Today</span>
@@ -262,13 +262,18 @@
 
   <div class="card">
     <h3>Kalshi Account</h3>
+    <div id="kalshi-total" class="big-number positive" style="margin-bottom:8px">--</div>
     <div class="stat-row">
       <span class="stat-label">Cash</span>
-      <span id="kalshi-cash" style="color:#00d4aa;font-weight:bold">--</span>
+      <span id="kalshi-cash">--</span>
     </div>
     <div class="stat-row">
-      <span class="stat-label">Portfolio</span>
-      <span id="kalshi-portfolio" style="color:#60a5fa;font-weight:bold">--</span>
+      <span class="stat-label">Positions</span>
+      <span id="kalshi-portfolio">--</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">P&L (from $465)</span>
+      <span id="kalshi-pnl">--</span>
     </div>
     <div class="stat-row">
       <span class="stat-label">Circuit Breaker</span>
@@ -277,10 +282,6 @@
     <div class="stat-row">
       <span class="stat-label">AI Cost (est)</span>
       <span id="ai-cost">$0.0000</span>
-    </div>
-    <div class="stat-row">
-      <span class="stat-label">Memory</span>
-      <span id="memory">-- MB</span>
     </div>
   </div>
 </div>
@@ -492,9 +493,18 @@
       // Kalshi account balance
       if (stats.kalshi_cash != null) {
         document.getElementById('kalshi-cash').textContent = fmtUsd(stats.kalshi_cash);
-      }
-      if (stats.kalshi_portfolio != null) {
-        document.getElementById('kalshi-portfolio').textContent = fmtUsd(stats.kalshi_portfolio);
+        document.getElementById('kalshi-portfolio').textContent = fmtUsd(stats.kalshi_portfolio || 0);
+
+        const total = (stats.kalshi_cash || 0) + (stats.kalshi_portfolio || 0);
+        const totalEl = document.getElementById('kalshi-total');
+        totalEl.textContent = fmtUsd(total);
+        totalEl.className = 'big-number ' + (total >= 465 ? 'positive' : 'negative');
+
+        const startingBalance = 465.0;
+        const realPnl = total - startingBalance;
+        const pnlEl = document.getElementById('kalshi-pnl');
+        pnlEl.textContent = fmtUsd(realPnl);
+        pnlEl.className = realPnl >= 0 ? 'positive' : 'negative';
       }
 
       const modeEl = document.getElementById('mode');
