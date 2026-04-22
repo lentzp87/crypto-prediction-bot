@@ -277,7 +277,10 @@ class Trader:
 
     async def _live_trade(self, signal, cost_usd: float, count: int) -> Optional[int]:
         """Place a real limit order on Kalshi."""
-        entry_cents = int(signal.kalshi_implied * 100)
+        # Use bid price + 2¢ spread buffer to cross the bid-ask and actually get filled
+        bid_cents = int(signal.kalshi_implied * 100)
+        spread_buffer = 2  # cents to add to cross the spread
+        entry_cents = min(bid_cents + spread_buffer, 95)  # cap at 95¢
 
         try:
             if not self._client:
@@ -345,7 +348,7 @@ class Trader:
                     "LIVE_TRADE",
                     signal.ticker,
                     f"LIVE {signal.side.upper()} @ {entry_cents}¢ × {actual_count} "
-                    f"(${actual_cost:.2f}) order={order_id[:8]} edge={signal.edge_cents:.1f}¢"
+                    f"(${actual_cost:.2f}) bid={bid_cents}¢ edge={signal.edge_cents:.1f}¢"
                 )
                 logger.info(
                     f"LIVE order filled: {signal.side} {signal.ticker} "
