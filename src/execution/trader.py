@@ -271,6 +271,22 @@ class Trader:
             remaining = (self.circuit_breaker_until - time.time()) / 60
             return f"Circuit breaker active ({remaining:.0f} min remaining)"
 
+        # ── Price sanity: reject bad risk/reward ──────────────
+        entry_cents = int(signal.kalshi_implied * 100)
+
+        # NO contracts above 45¢ are terrible risk/reward — you risk 45+¢ to win <55¢
+        # The bot was buying NO at 60-88¢ and getting wiped out
+        if signal.side == "no" and entry_cents > 45:
+            return f"NO price too high ({entry_cents}¢ > 45¢ cap) — bad risk/reward"
+
+        # YES contracts above 85¢ also bad — paying 85+¢ to win <15¢
+        if signal.side == "yes" and entry_cents > 85:
+            return f"YES price too high ({entry_cents}¢ > 85¢ cap) — bad risk/reward"
+
+        # Very cheap contracts (<5¢) are almost certainly losing bets
+        if entry_cents < 5:
+            return f"Price too low ({entry_cents}¢) — likely to expire worthless"
+
         # Daily loss limit
         today = self.db.get_today_stats(mode=self.mode)
         if today["today_pnl"] <= -self.settings.max_daily_loss_usd:
@@ -304,8 +320,8 @@ class Trader:
         return None
 
     def _calculate_size(self, signal, consensus) -> tuple[float, int]:
-        """Kelly-lite position sizing scaled for $2K bankroll."""
-        base_size = self.settings.base_trade_size_usd  # $40
+        """Kelly-lite position sizing with max-loss cap."""
+        base_size = self.settings.base_trade_size_usd  # $9
 
         confidence_mult = 1.0
 
@@ -328,6 +344,12 @@ class Trader:
             entry_price = 50
         cost_per_contract = entry_price / 100.0
         count = max(1, int(trade_size / cost_per_contract))
+
+        # ── Max loss cap: never risk more than $15 on a single position ──
+        # If all contracts go to zero, we lose cost_per_contract * count
+        max_loss_usd = 15.0
+        max_contracts_by_loss = max(1, int(max_loss_usd / cost_per_contract))
+        count = min(count, max_contracts_by_loss)
 
         actual_cost = count * cost_per_contract
 
