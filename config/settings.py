@@ -30,9 +30,9 @@ class Settings(BaseSettings):
 
     # ── Risk Management ($465 bankroll) ─────────────────────────
     wallet_size_usd: float = 465.0
-    max_daily_loss_usd: float = 46.0        # ~10% of wallet
+    max_daily_loss_usd: float = 200.0       # hard stop at -$200
     max_positions: int = 8
-    max_trades_per_day: int = 30
+    max_trades_per_day: int = 9999          # unlimited — daily loss limit is the real guard
     min_edge_cents: float = 3.0
     max_single_trade_usd: float = 23.0      # ~5% of wallet
     circuit_breaker_losses: int = 3         # consecutive losses → pause
