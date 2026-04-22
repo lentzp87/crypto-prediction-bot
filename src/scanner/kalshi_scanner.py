@@ -481,6 +481,9 @@ class KalshiScanner:
                 import os
                 pem_env = os.environ.get("KALSHI_PRIVATE_KEY_PEM", "")
                 if pem_env:
+                    # Render env vars often mangle \n → literal backslash-n
+                    if "\\n" in pem_env:
+                        pem_env = pem_env.replace("\\n", "\n")
                     pem_bytes = pem_env.encode()
                     self._private_key = serialization.load_pem_private_key(pem_bytes, password=None)
                     logger.info("Kalshi RSA key loaded from env var")

@@ -110,6 +110,30 @@ class Trader:
         """True if circuit breaker is active."""
         return time.time() < self.circuit_breaker_until
 
+    async def verify_live_auth(self) -> bool:
+        """Check that Kalshi API auth works before placing real orders."""
+        if self.mode != "live":
+            return True
+        try:
+            if not self._client:
+                self._client = httpx.AsyncClient(timeout=15)
+            path = "/trade-api/v2/portfolio/balance"
+            headers = self._sign_request("GET", path)
+            resp = await self._client.get(
+                f"{self.settings.kalshi_base_url}{path}",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            balance_cents = data.get("balance", 0)
+            logger.info(f"LIVE MODE: Kalshi auth verified, balance=${balance_cents/100:.2f}")
+            self._log_event("SYSTEM", "KALSHI", f"Live auth OK — balance=${balance_cents/100:.2f}")
+            return True
+        except Exception as e:
+            logger.error(f"LIVE MODE AUTH FAILED: {e} — falling back to paper")
+            self._log_event("ERROR", "KALSHI", f"Live auth failed: {e} — using paper mode")
+            return False
+
     # ── Trade Entry ────────────────────────────────────────────
 
     async def execute_trade(self, signal, consensus) -> Optional[int]:
@@ -400,20 +424,25 @@ class Trader:
     # ── Kalshi Request Signing ─────────────────────────────────
 
     def _load_private_key(self):
-        """Load RSA private key (cached)."""
+        """Load RSA private key (cached). Handles Render env var newline mangling."""
         if not hasattr(self, '_private_key') or self._private_key is None:
             try:
                 pem_env = os.environ.get("KALSHI_PRIVATE_KEY_PEM", "")
                 if pem_env:
+                    # Render env vars often mangle \n → literal backslash-n
+                    if "\\n" in pem_env:
+                        pem_env = pem_env.replace("\\n", "\n")
                     self._private_key = serialization.load_pem_private_key(
                         pem_env.encode(), password=None
                     )
+                    logger.info("Trader RSA key loaded from env var")
                 else:
                     key_path = self.settings.kalshi_private_key_path
                     with open(key_path, "rb") as f:
                         self._private_key = serialization.load_pem_private_key(
                             f.read(), password=None
                         )
+                    logger.info("Trader RSA key loaded from file")
             except Exception as e:
                 logger.error(f"Failed to load RSA key for trading: {e}")
                 self._private_key = None

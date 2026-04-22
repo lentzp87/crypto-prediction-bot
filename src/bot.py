@@ -83,6 +83,12 @@ class CryptoPredictionBot:
         assets = list(self.engines.keys())
         logger.info(f"Assets: {', '.join(assets)}")
 
+        # Verify live trading auth before starting
+        if self.trader.mode == "live":
+            auth_ok = await self.trader.verify_live_auth()
+            if not auth_ok:
+                logger.warning("Live auth failed — bot will run but orders will fail")
+
         tasks = [
             asyncio.create_task(self.btc_engine.start(), name="btc_engine"),
             asyncio.create_task(self.btc_engine.poll_funding_rate(), name="btc_funding"),
