@@ -75,6 +75,10 @@ class Trade(Base):
     status = Column(String(20), default="open")
     exit_reason = Column(Text, nullable=True)
     mode = Column(String(10), default="paper")
+    follow_count = Column(Integer, nullable=True)   # how many AI models said FOLLOW (2 or 3)
+    active_count = Column(Integer, nullable=True)    # how many AI models were active
+    avg_confidence = Column(Float, nullable=True)     # average confidence of FOLLOW models
+    edge_cents = Column(Float, nullable=True)         # edge at time of entry
     bot_version = Column(String(20), default="1.0.0")
     created_at = Column(TIMESTAMP, server_default=func.now())
     closed_at = Column(TIMESTAMP, nullable=True)
@@ -155,7 +159,9 @@ class Database:
     # ── Trades ─────────────────────────────────────────────────
 
     def record_trade(self, ticker: str, side: str, entry_price_cents: int,
-                     count: int, cost_usd: float, mode: str = "paper") -> int:
+                     count: int, cost_usd: float, mode: str = "paper",
+                     follow_count: int = None, active_count: int = None,
+                     avg_confidence: float = None, edge_cents: float = None) -> int:
         with self._session() as s:
             trade = Trade(
                 ticker=ticker,
@@ -164,6 +170,10 @@ class Database:
                 count=count,
                 cost_usd=cost_usd,
                 mode=mode,
+                follow_count=follow_count,
+                active_count=active_count,
+                avg_confidence=avg_confidence,
+                edge_cents=edge_cents,
             )
             s.add(trade)
             s.commit()
@@ -268,6 +278,34 @@ class Database:
                 }
                 for t in trades
             ]
+
+    # ── Consensus Performance ─────────────────────────────────
+
+    def get_consensus_stats(self) -> dict:
+        """Break down win rate and P&L by follow_count (2/3 vs 3/3)."""
+        with self._session() as s:
+            trades = s.query(Trade).filter(
+                Trade.status == "closed",
+                Trade.follow_count.isnot(None),
+            ).all()
+
+            stats = {}
+            for fc in [2, 3]:
+                group = [t for t in trades if t.follow_count == fc]
+                if not group:
+                    stats[f"{fc}_of_3"] = {"trades": 0, "wins": 0, "win_rate": 0,
+                                           "total_pnl": 0, "avg_pnl": 0}
+                    continue
+                wins = [t for t in group if (t.pnl_usd or 0) > 0]
+                total_pnl = sum(t.pnl_usd or 0 for t in group)
+                stats[f"{fc}_of_3"] = {
+                    "trades": len(group),
+                    "wins": len(wins),
+                    "win_rate": round(len(wins) / len(group) * 100, 1),
+                    "total_pnl": round(total_pnl, 2),
+                    "avg_pnl": round(total_pnl / len(group), 2),
+                }
+            return stats
 
     # ── Skipped Signals ────────────────────────────────────────
 

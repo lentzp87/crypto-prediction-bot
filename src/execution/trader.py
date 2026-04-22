@@ -275,9 +275,9 @@ class Trader:
         size_usd, count = self._calculate_size(signal, consensus)
 
         if self.mode == "paper":
-            return await self._paper_trade(signal, size_usd, count)
+            return await self._paper_trade(signal, size_usd, count, consensus)
         else:
-            return await self._live_trade(signal, size_usd, count)
+            return await self._live_trade(signal, size_usd, count, consensus)
 
     def _check_limits(self, signal) -> Optional[str]:
         """Check all risk limits. Returns block reason or None."""
@@ -388,7 +388,7 @@ class Trader:
 
     # ── Paper Trading ──────────────────────────────────────────
 
-    async def _paper_trade(self, signal, cost_usd: float, count: int) -> int:
+    async def _paper_trade(self, signal, cost_usd: float, count: int, consensus=None) -> int:
         """Record a paper trade."""
         entry_cents = int(signal.kalshi_implied * 100)
 
@@ -399,6 +399,10 @@ class Trader:
             count=count,
             cost_usd=cost_usd,
             mode="paper",
+            follow_count=consensus.follow_count if consensus else None,
+            active_count=consensus.active_count if consensus else None,
+            avg_confidence=round(consensus.confidence, 3) if consensus else None,
+            edge_cents=round(signal.edge_cents, 1) if signal else None,
         )
 
         position = Position(
@@ -430,7 +434,7 @@ class Trader:
 
     # ── Live Trading ───────────────────────────────────────────
 
-    async def _live_trade(self, signal, cost_usd: float, count: int) -> Optional[int]:
+    async def _live_trade(self, signal, cost_usd: float, count: int, consensus=None) -> Optional[int]:
         """Place a real limit order on Kalshi."""
         # Use bid price + 3¢ spread buffer to cross the bid-ask and actually get filled
         bid_cents = int(signal.kalshi_implied * 100)
@@ -489,6 +493,10 @@ class Trader:
                     count=actual_count,
                     cost_usd=actual_cost,
                     mode="live",
+                    follow_count=consensus.follow_count if consensus else None,
+                    active_count=consensus.active_count if consensus else None,
+                    avg_confidence=round(consensus.confidence, 3) if consensus else None,
+                    edge_cents=round(signal.edge_cents, 1) if signal else None,
                 )
 
                 position = Position(

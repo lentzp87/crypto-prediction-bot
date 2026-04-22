@@ -36,6 +36,7 @@ class DashboardServer:
         self.app.router.add_get("/api/pnl_history", self._api_pnl_history)
         self.app.router.add_get("/api/closed", self._api_closed)
         self.app.router.add_get("/api/status", self._api_status)
+        self.app.router.add_get("/api/consensus", self._api_consensus)
 
     async def start(self):
         runner = web.AppRunner(self.app)
@@ -88,6 +89,10 @@ class DashboardServer:
     async def _api_closed(self, request):
         """Closed trades history."""
         return web.json_response(self.db.get_closed_trades(mode=self.trader.mode))
+
+    async def _api_consensus(self, request):
+        """Consensus performance: 2/3 vs 3/3 win rates."""
+        return web.json_response(self.db.get_consensus_stats())
 
     async def _api_status(self, request):
         """Bot health: uptime, memory, task status."""

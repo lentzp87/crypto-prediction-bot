@@ -374,6 +374,29 @@
   </div>
 </div>
 
+<!-- Row 2.5: AI Consensus Performance -->
+<div class="grid">
+  <div class="card full-width">
+    <h3>AI Consensus Performance (2/3 vs 3/3)</h3>
+    <div style="display:flex;gap:32px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:200px;">
+        <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">3/3 Unanimous</div>
+        <div class="stat-row"><span class="stat-label">Trades</span><span id="c3-trades">0</span></div>
+        <div class="stat-row"><span class="stat-label">Win Rate</span><span id="c3-winrate">--</span></div>
+        <div class="stat-row"><span class="stat-label">Total P&L</span><span id="c3-pnl">$0.00</span></div>
+        <div class="stat-row"><span class="stat-label">Avg P&L</span><span id="c3-avg">$0.00</span></div>
+      </div>
+      <div style="flex:1;min-width:200px;">
+        <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">2/3 Majority</div>
+        <div class="stat-row"><span class="stat-label">Trades</span><span id="c2-trades">0</span></div>
+        <div class="stat-row"><span class="stat-label">Win Rate</span><span id="c2-winrate">--</span></div>
+        <div class="stat-row"><span class="stat-label">Total P&L</span><span id="c2-pnl">$0.00</span></div>
+        <div class="stat-row"><span class="stat-label">Avg P&L</span><span id="c2-avg">$0.00</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Row 3: Event Log -->
 <div class="grid">
   <div class="card full-width">
@@ -599,6 +622,26 @@
           <span>${e.detail || ''}</span>
         </div>
       `).join('');
+    }
+
+    // Consensus Performance
+    const consensus = await fetchJSON('/api/consensus');
+    if (consensus) {
+      const c3 = consensus['3_of_3'] || {};
+      const c2 = consensus['2_of_3'] || {};
+      document.getElementById('c3-trades').textContent = c3.trades || 0;
+      document.getElementById('c3-winrate').textContent = c3.trades ? c3.win_rate + '%' : '--';
+      const c3pnl = document.getElementById('c3-pnl');
+      c3pnl.textContent = fmtUsd(c3.total_pnl || 0);
+      c3pnl.className = (c3.total_pnl || 0) >= 0 ? 'positive' : 'negative';
+      document.getElementById('c3-avg').textContent = fmtUsd(c3.avg_pnl || 0);
+
+      document.getElementById('c2-trades').textContent = c2.trades || 0;
+      document.getElementById('c2-winrate').textContent = c2.trades ? c2.win_rate + '%' : '--';
+      const c2pnl = document.getElementById('c2-pnl');
+      c2pnl.textContent = fmtUsd(c2.total_pnl || 0);
+      c2pnl.className = (c2.total_pnl || 0) >= 0 ? 'positive' : 'negative';
+      document.getElementById('c2-avg').textContent = fmtUsd(c2.avg_pnl || 0);
     }
 
     // Status
