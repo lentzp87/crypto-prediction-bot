@@ -299,8 +299,9 @@ class Trader:
         if signal.side == "yes" and entry_cents > 85:
             return f"YES price too high ({entry_cents}¢ > 85¢ cap) — bad risk/reward"
 
-        # Very cheap contracts (<5¢) are almost certainly losing bets
-        if entry_cents < 5:
+        # Cheap contracts (<10¢) are almost certainly losing bets —
+        # the 6-8¢ NO trades on deep OTM strikes were burning money
+        if entry_cents < 10:
             return f"Price too low ({entry_cents}¢) — likely to expire worthless"
 
         # ── Duplicate ticker check: NEVER buy a contract we already hold ──

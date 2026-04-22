@@ -380,17 +380,18 @@ class KalshiScanner:
         )
 
         # Skip extreme probabilities — these are deep OTM contracts where
-        # both us and Kalshi agree it's ~0% or ~100%. Any "edge" is noise.
-        if est.probability > 0.95 or est.probability < 0.05:
+        # both us and Kalshi agree it's very unlikely. Any "edge" is noise.
+        if est.probability > 0.90 or est.probability < 0.10:
             logger.debug(
                 f"Skip {contract.ticker}: extreme prob {est.probability:.1%} "
                 f"(strike={contract.strike_price:.0f}, {contract.minutes_to_close:.0f}min)"
             )
             return None
 
-        # Also skip if Kalshi price is at the extremes (1¢ or 99¢)
-        # — no liquidity there and the edge is illusory
-        if contract.yes_price <= 2 or contract.yes_price >= 98:
+        # Skip if Kalshi price is at the extremes — no liquidity, edge is illusory
+        # YES >= 90¢ means NO <= 10¢ (deep OTM NO bets are almost always losers)
+        # YES <= 10¢ means market says <10% chance (deep OTM YES bets)
+        if contract.yes_price <= 10 or contract.yes_price >= 90:
             logger.debug(f"Skip {contract.ticker}: extreme price {contract.yes_price}¢")
             return None
 
