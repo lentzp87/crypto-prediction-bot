@@ -379,6 +379,12 @@ class KalshiScanner:
             minutes_to_close=contract.minutes_to_close,
         )
 
+        # Skip if engine not ready (volatility not computed yet)
+        # Returns -1.0 sentinel — old default of 0.5 caused phantom edges
+        if est.probability < 0:
+            logger.debug(f"Skip {contract.ticker}: engine not ready (no volatility data)")
+            return None
+
         # Skip extreme probabilities — these are deep OTM contracts where
         # both us and Kalshi agree it's very unlikely. Any "edge" is noise.
         if est.probability > 0.90 or est.probability < 0.10:

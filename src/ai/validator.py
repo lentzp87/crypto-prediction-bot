@@ -157,11 +157,9 @@ class AIValidator:
 
     def _calculate_consensus(self, models: list[ModelResponse], default_side: str) -> ConsensusResult:
         """
-        Consensus rules:
-        - 3 active → 2 must agree FOLLOW
-        - 2 active → both must agree
-        - 1 active → needs 65%+ confidence
-        - 0 active → SKIP
+        Consensus rules (strict — require real triple-check):
+        - 3 active → 2 must agree FOLLOW (true triple-model gate)
+        - <3 active → SKIP (don't trade with a degraded gate)
         """
         active = [m for m in models if m.action in ("FOLLOW", "SKIP")]
         follow = [m for m in active if m.action == "FOLLOW"]
@@ -170,12 +168,11 @@ class AIValidator:
         action = "SKIP"
         n = len(active)
 
+        # Require all 3 models active, at least 2 must FOLLOW
         if n >= 3 and len(follow) >= 2:
             action = "FOLLOW"
-        elif n == 2 and len(follow) == 2:
-            action = "FOLLOW"
-        elif n == 1 and len(follow) == 1 and follow[0].confidence >= 0.65:
-            action = "FOLLOW"
+        # If fewer than 3 models are active, don't trade — the gate is degraded
+        # This prevents 2 rubber-stamp models from approving everything
 
         # Average confidence of agreeing models
         if follow and action == "FOLLOW":

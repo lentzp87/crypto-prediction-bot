@@ -142,8 +142,11 @@ class BTCEngine:
         """
         current = self.price
         if current == 0 or self.indicators.volatility_15m == 0:
+            # NOT READY — return sentinel so scanner skips this contract.
+            # Old behavior returned 0.5 which created phantom 30¢+ "edges"
+            # on every contract after restart before vol was computed.
             return ProbabilityEstimate(
-                probability=0.5, base_prob=0.5,
+                probability=-1.0, base_prob=0,
                 momentum_adj=0, rsi_adj=0, bb_adj=0, funding_adj=0,
                 z_score=0, distance=0, scaled_vol=0,
             )
