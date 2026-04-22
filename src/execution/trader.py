@@ -287,6 +287,12 @@ class Trader:
         if entry_cents < 5:
             return f"Price too low ({entry_cents}¢) — likely to expire worthless"
 
+        # ── Duplicate ticker check: NEVER buy a contract we already hold ──
+        # This prevents position stacking across restarts
+        for p in self.positions.values():
+            if p.ticker == signal.ticker and p.side == signal.side:
+                return f"Already holding {signal.ticker} {signal.side}"
+
         # Daily loss limit
         today = self.db.get_today_stats(mode=self.mode)
         if today["today_pnl"] <= -self.settings.max_daily_loss_usd:
