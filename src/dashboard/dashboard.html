@@ -261,22 +261,26 @@
   </div>
 
   <div class="card">
-    <h3>Bot Status</h3>
+    <h3>Kalshi Account</h3>
     <div class="stat-row">
-      <span class="stat-label">Memory</span>
-      <span id="memory">-- MB</span>
+      <span class="stat-label">Cash</span>
+      <span id="kalshi-cash" style="color:#00d4aa;font-weight:bold">--</span>
     </div>
     <div class="stat-row">
-      <span class="stat-label">AI Cost (est)</span>
-      <span id="ai-cost">$0.0000</span>
+      <span class="stat-label">Portfolio</span>
+      <span id="kalshi-portfolio" style="color:#60a5fa;font-weight:bold">--</span>
     </div>
     <div class="stat-row">
       <span class="stat-label">Circuit Breaker</span>
       <span id="circuit-breaker">Inactive</span>
     </div>
     <div class="stat-row">
-      <span class="stat-label">Wallet</span>
-      <span id="wallet">$2,000</span>
+      <span class="stat-label">AI Cost (est)</span>
+      <span id="ai-cost">$0.0000</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Memory</span>
+      <span id="memory">-- MB</span>
     </div>
   </div>
 </div>
@@ -485,6 +489,14 @@
       document.getElementById('open-count').textContent = stats.open_positions;
       document.getElementById('circuit-breaker').textContent = stats.circuit_breaker_active ? 'ACTIVE' : 'Inactive';
 
+      // Kalshi account balance
+      if (stats.kalshi_cash != null) {
+        document.getElementById('kalshi-cash').textContent = fmtUsd(stats.kalshi_cash);
+      }
+      if (stats.kalshi_portfolio != null) {
+        document.getElementById('kalshi-portfolio').textContent = fmtUsd(stats.kalshi_portfolio);
+      }
+
       const modeEl = document.getElementById('mode');
       modeEl.textContent = stats.mode.toUpperCase();
       modeEl.className = 'mode mode-' + stats.mode;
@@ -585,7 +597,6 @@
       document.getElementById('uptime').textContent = status.uptime;
       document.getElementById('memory').textContent = status.memory_mb + ' MB';
       document.getElementById('ai-cost').textContent = '$' + fmt(status.ai_validator?.estimated_cost || 0, 4);
-      document.getElementById('wallet').textContent = fmtUsd(status.wallet_size);
     }
   }
 

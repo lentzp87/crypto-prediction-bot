@@ -101,6 +101,11 @@ class Trader:
         self._running = False
         self._client: Optional[httpx.AsyncClient] = None
 
+        # Live Kalshi balance (updated periodically)
+        self.kalshi_cash: float = 0.0
+        self.kalshi_portfolio: float = 0.0
+        self._balance_updated_at: float = 0
+
     @property
     def mode(self) -> str:
         return getattr(self.settings, 'trading_mode', 'paper')
@@ -209,6 +214,27 @@ class Trader:
         except Exception as e:
             logger.error(f"Failed to sync Kalshi positions: {e}")
             self._log_event("ERROR", "KALSHI", f"Position sync failed: {e}")
+
+    async def fetch_kalshi_balance(self):
+        """Fetch live cash + portfolio value from Kalshi API."""
+        if self.mode != "live":
+            return
+        try:
+            if not self._client:
+                self._client = httpx.AsyncClient(timeout=15)
+            path = "/trade-api/v2/portfolio/balance"
+            headers = self._sign_request("GET", path)
+            resp = await self._client.get(
+                f"{self.settings.kalshi_base_url}{path}",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            self.kalshi_cash = data.get("balance", 0) / 100.0
+            self.kalshi_portfolio = data.get("portfolio_value", 0) / 100.0
+            self._balance_updated_at = time.time()
+        except Exception as e:
+            logger.warning(f"Failed to fetch Kalshi balance: {e}")
 
     # ── Trade Entry ────────────────────────────────────────────
 
@@ -754,6 +780,8 @@ class Trader:
             "open_positions": len(self.positions),
             "consecutive_losses": self.consecutive_losses,
             "circuit_breaker_active": self.is_paused,
+            "kalshi_cash": self.kalshi_cash,
+            "kalshi_portfolio": self.kalshi_portfolio,
             **stats,
             **today,
         }

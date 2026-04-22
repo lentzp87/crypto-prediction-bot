@@ -88,6 +88,7 @@ class CryptoPredictionBot:
             auth_ok = await self.trader.verify_live_auth()
             if auth_ok:
                 await self.trader.sync_kalshi_positions()
+                await self.trader.fetch_kalshi_balance()
             else:
                 logger.warning("Live auth failed — bot will run but orders will fail")
 
@@ -249,6 +250,9 @@ class CryptoPredictionBot:
         """Log stats, prune memory, run GC."""
         while self._running:
             await asyncio.sleep(self.settings.stats_interval_sec)
+
+            # Refresh Kalshi balance every stats cycle
+            await self.trader.fetch_kalshi_balance()
 
             stats = self.trader.to_dict()
             btc = self.btc_engine.to_dict()
