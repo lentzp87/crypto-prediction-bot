@@ -424,25 +424,35 @@ class Trader:
     # ── Kalshi Request Signing ─────────────────────────────────
 
     def _load_private_key(self):
-        """Load RSA private key (cached). Handles Render env var newline mangling."""
+        """Load RSA private key (cached). Tries B64 env → PEM env → file."""
         if not hasattr(self, '_private_key') or self._private_key is None:
             try:
+                # Option 1: Base64-encoded PEM (immune to Render newline mangling)
+                b64_env = os.environ.get("KALSHI_PRIVATE_KEY_B64", "")
+                if b64_env:
+                    pem_bytes = base64.b64decode(b64_env)
+                    self._private_key = serialization.load_pem_private_key(pem_bytes, password=None)
+                    logger.info("Trader RSA key loaded from B64 env var")
+                    return self._private_key
+
+                # Option 2: Raw PEM string (fix newline mangling)
                 pem_env = os.environ.get("KALSHI_PRIVATE_KEY_PEM", "")
                 if pem_env:
-                    # Render env vars often mangle \n → literal backslash-n
                     if "\\n" in pem_env:
                         pem_env = pem_env.replace("\\n", "\n")
                     self._private_key = serialization.load_pem_private_key(
                         pem_env.encode(), password=None
                     )
-                    logger.info("Trader RSA key loaded from env var")
-                else:
-                    key_path = self.settings.kalshi_private_key_path
-                    with open(key_path, "rb") as f:
-                        self._private_key = serialization.load_pem_private_key(
-                            f.read(), password=None
-                        )
-                    logger.info("Trader RSA key loaded from file")
+                    logger.info("Trader RSA key loaded from PEM env var")
+                    return self._private_key
+
+                # Option 3: PEM file
+                key_path = self.settings.kalshi_private_key_path
+                with open(key_path, "rb") as f:
+                    self._private_key = serialization.load_pem_private_key(
+                        f.read(), password=None
+                    )
+                logger.info("Trader RSA key loaded from file")
             except Exception as e:
                 logger.error(f"Failed to load RSA key for trading: {e}")
                 self._private_key = None
