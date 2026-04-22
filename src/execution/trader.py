@@ -162,6 +162,11 @@ class Trader:
             positions = data.get("market_positions", [])
             synced = 0
 
+            # Build set of already-tracked tickers to avoid duplicating on restart
+            already_tracked = {
+                (p.ticker, p.side) for p in self.positions.values()
+            }
+
             for p in positions:
                 ticker = p.get("ticker", "")
                 pos_fp = float(p.get("position_fp", 0))
@@ -171,6 +176,11 @@ class Trader:
                 exposure = float(p.get("market_exposure_dollars", "0"))
                 count = int(abs(pos_fp))
                 side = "yes" if pos_fp > 0 else "no"
+
+                # Skip if we already track this ticker+side (prevents duplication across restarts)
+                if (ticker, side) in already_tracked:
+                    logger.info(f"Skipping already-tracked position: {ticker} {side}")
+                    continue
 
                 # Calculate average entry price
                 if count > 0:
@@ -210,6 +220,12 @@ class Trader:
                 self._log_event("SYSTEM", "KALSHI", f"Synced {synced} positions from Kalshi")
             else:
                 logger.info("No existing Kalshi positions to sync")
+
+            # Reset circuit breaker on startup — stale losses from
+            # previous run shouldn't block fresh trading
+            self.consecutive_losses = 0
+            self.circuit_breaker_until = 0
+            logger.info("Circuit breaker reset on startup")
 
         except Exception as e:
             logger.error(f"Failed to sync Kalshi positions: {e}")
@@ -741,7 +757,9 @@ class Trader:
         # Track consecutive losses for circuit breaker
         if pnl < 0:
             self.consecutive_losses += 1
-            if self.consecutive_losses >= self.settings.circuit_breaker_losses:
+            # Only trigger circuit breaker if NOT already paused —
+            # otherwise each loss during the pause resets the timer and it never expires
+            if self.consecutive_losses >= self.settings.circuit_breaker_losses and not self.is_paused:
                 pause_sec = self.settings.circuit_breaker_pause_min * 60
                 self.circuit_breaker_until = time.time() + pause_sec
                 self._log_event(
@@ -750,6 +768,8 @@ class Trader:
                     f"{self.consecutive_losses} consecutive losses — pausing {self.settings.circuit_breaker_pause_min} min"
                 )
                 logger.warning(f"Circuit breaker triggered: {self.consecutive_losses} losses")
+                # Reset counter so it takes another N losses to re-trigger after pause ends
+                self.consecutive_losses = 0
         else:
             self.consecutive_losses = 0
 
