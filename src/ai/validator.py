@@ -170,11 +170,6 @@ class AIValidator:
         action = "SKIP"
         n = len(active)
 
-        logger.info(
-            f"Consensus calc: n={n}, follow={len(follow)}, skip={len(skip)}, "
-            f"actions={[m.action for m in models]}"
-        )
-
         if n >= 3 and len(follow) >= 2:
             action = "FOLLOW"
         elif n == 2 and len(follow) >= 2:

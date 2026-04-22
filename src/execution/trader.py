@@ -35,6 +35,7 @@ class Position:
     count: int                  # number of contracts
     cost_usd: float
     mode: str                   # "paper" or "live"
+    synced: bool = False         # True if loaded from Kalshi on startup (not bot-placed)
     created_at: float = field(default_factory=time.time)
 
     # Current market state
@@ -209,6 +210,7 @@ class Trader:
                     count=count,
                     cost_usd=exposure,
                     mode="live",
+                    synced=True,  # Mark as synced — losses don't count for circuit breaker
                     current_price_cents=entry_cents,
                     highest_price=entry_cents,
                 )
@@ -772,7 +774,9 @@ class Trader:
         )
 
         # Track consecutive losses for circuit breaker
-        if pnl < 0:
+        # Skip synced positions — losses from pre-existing positions on restart
+        # shouldn't trigger the breaker and block fresh trading
+        if pnl < 0 and not pos.synced:
             self.consecutive_losses += 1
             # Only trigger circuit breaker if NOT already paused —
             # otherwise each loss during the pause resets the timer and it never expires
@@ -787,7 +791,7 @@ class Trader:
                 logger.warning(f"Circuit breaker triggered: {self.consecutive_losses} losses")
                 # Reset counter so it takes another N losses to re-trigger after pause ends
                 self.consecutive_losses = 0
-        else:
+        elif pnl >= 0:
             self.consecutive_losses = 0
 
         self._log_event(
@@ -851,11 +855,14 @@ class Trader:
     def to_dict(self) -> dict:
         stats = self.db.get_trade_stats(mode=self.mode)
         today = self.db.get_today_stats(mode=self.mode)
+        cb_remaining = max(0, self.circuit_breaker_until - time.time()) if self.is_paused else 0
         return {
             "mode": self.mode,
             "open_positions": len(self.positions),
             "consecutive_losses": self.consecutive_losses,
             "circuit_breaker_active": self.is_paused,
+            "circuit_breaker_remaining_sec": round(cb_remaining),
+            "circuit_breaker_threshold": self.settings.circuit_breaker_losses,
             "kalshi_cash": self.kalshi_cash,
             "kalshi_portfolio": self.kalshi_portfolio,
             **stats,

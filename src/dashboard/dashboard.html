@@ -280,6 +280,10 @@
       <span id="circuit-breaker">Inactive</span>
     </div>
     <div class="stat-row">
+      <span class="stat-label">Losses → Trip</span>
+      <span id="cb-losses">0 / 5</span>
+    </div>
+    <div class="stat-row">
       <span class="stat-label">AI Cost (est)</span>
       <span id="ai-cost">$0.0000</span>
     </div>
@@ -511,7 +515,27 @@
       document.getElementById('total-trades').textContent = stats.total;
       document.getElementById('win-loss').textContent = stats.wins + ' / ' + stats.losses;
       document.getElementById('open-count').textContent = stats.open_positions;
-      document.getElementById('circuit-breaker').textContent = stats.circuit_breaker_active ? 'ACTIVE' : 'Inactive';
+      // Circuit breaker with countdown
+      const cbEl = document.getElementById('circuit-breaker');
+      if (stats.circuit_breaker_active && stats.circuit_breaker_remaining_sec > 0) {
+        const mins = Math.floor(stats.circuit_breaker_remaining_sec / 60);
+        const secs = stats.circuit_breaker_remaining_sec % 60;
+        cbEl.textContent = `ACTIVE (${mins}m ${secs}s)`;
+        cbEl.style.color = '#ff4444';
+      } else {
+        cbEl.textContent = 'Inactive';
+        cbEl.style.color = '#00d4aa';
+      }
+      const threshold = stats.circuit_breaker_threshold || 5;
+      const lossEl = document.getElementById('cb-losses');
+      lossEl.textContent = `${stats.consecutive_losses || 0} / ${threshold}`;
+      if (stats.consecutive_losses >= threshold - 1) {
+        lossEl.style.color = '#ff4444';
+      } else if (stats.consecutive_losses >= 2) {
+        lossEl.style.color = '#fbbf24';
+      } else {
+        lossEl.style.color = '#e0e6ed';
+      }
 
       // Kalshi account balance
       if (stats.kalshi_cash != null) {
