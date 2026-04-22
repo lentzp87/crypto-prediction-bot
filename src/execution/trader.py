@@ -9,13 +9,18 @@ Scaled for $2K bankroll.
 """
 
 import asyncio
+import base64
+import os
 import time
 import logging
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 from collections import deque
 
 import httpx
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 logger = logging.getLogger("trader")
 
@@ -247,20 +252,198 @@ class Trader:
     # ── Live Trading ───────────────────────────────────────────
 
     async def _live_trade(self, signal, cost_usd: float, count: int) -> Optional[int]:
-        """Place a real order on Kalshi."""
+        """Place a real limit order on Kalshi."""
         entry_cents = int(signal.kalshi_implied * 100)
 
         try:
-            # TODO: Implement Kalshi order placement
-            # POST /trade-api/v2/portfolio/orders
-            # For now, fall back to paper-like tracking
-            logger.warning("Live trading not yet implemented — treating as paper")
-            return await self._paper_trade(signal, cost_usd, count)
+            if not self._client:
+                self._client = httpx.AsyncClient(timeout=15)
 
+            path = "/trade-api/v2/portfolio/orders"
+            headers = self._sign_request("POST", path)
+            headers["Content-Type"] = "application/json"
+
+            client_order_id = str(uuid.uuid4())
+
+            order_body = {
+                "ticker": signal.ticker,
+                "action": "buy",
+                "side": signal.side,
+                "count": count,
+                "type": "limit",
+                "yes_price": entry_cents if signal.side == "yes" else None,
+                "no_price": entry_cents if signal.side == "no" else None,
+                "time_in_force": "fill_or_kill",  # immediate fill or cancel
+                "client_order_id": client_order_id,
+            }
+            # Remove None price field
+            order_body = {k: v for k, v in order_body.items() if v is not None}
+
+            resp = await self._client.post(
+                f"{self.settings.kalshi_base_url}{path}",
+                headers=headers,
+                json=order_body,
+            )
+            resp.raise_for_status()
+            order_data = resp.json().get("order", {})
+
+            order_id = order_data.get("order_id", "")
+            status = order_data.get("status", "unknown")
+            filled = order_data.get("fill_count", 0) or order_data.get("fill_count_fp", 0)
+
+            if status in ("filled", "resting") or filled > 0:
+                actual_count = filled if filled > 0 else count
+                actual_cost = actual_count * (entry_cents / 100.0)
+
+                trade_id = self.db.record_trade(
+                    ticker=signal.ticker,
+                    side=signal.side,
+                    entry_price_cents=entry_cents,
+                    count=actual_count,
+                    cost_usd=actual_cost,
+                    mode="live",
+                )
+
+                position = Position(
+                    trade_id=trade_id,
+                    ticker=signal.ticker,
+                    side=signal.side,
+                    entry_price_cents=entry_cents,
+                    count=actual_count,
+                    cost_usd=actual_cost,
+                    mode="live",
+                    current_price_cents=entry_cents,
+                    highest_price=entry_cents,
+                )
+                self.positions[trade_id] = position
+
+                self._log_event(
+                    "LIVE_TRADE",
+                    signal.ticker,
+                    f"LIVE {signal.side.upper()} @ {entry_cents}¢ × {actual_count} "
+                    f"(${actual_cost:.2f}) order={order_id[:8]} edge={signal.edge_cents:.1f}¢"
+                )
+                logger.info(
+                    f"LIVE order filled: {signal.side} {signal.ticker} "
+                    f"@ {entry_cents}¢ × {actual_count} = ${actual_cost:.2f} "
+                    f"order_id={order_id}"
+                )
+                return trade_id
+            else:
+                # Order not filled (fill_or_kill rejected)
+                self._log_event(
+                    "ORDER_REJECTED",
+                    signal.ticker,
+                    f"Fill-or-kill not filled: {signal.side} @ {entry_cents}¢ × {count} "
+                    f"status={status}"
+                )
+                logger.warning(f"Order not filled: {status} for {signal.ticker}")
+                return None
+
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:300] if e.response else ""
+            logger.error(f"Kalshi order API error: {e.response.status_code} {body}")
+            self._log_event("ERROR", signal.ticker, f"Order API {e.response.status_code}: {body[:100]}")
+            return None
         except Exception as e:
             logger.error(f"Live trade failed: {e}")
             self._log_event("ERROR", signal.ticker, f"Live trade failed: {e}")
             return None
+
+    async def _live_close(self, pos: Position) -> Optional[float]:
+        """Close a live position by selling on Kalshi."""
+        try:
+            if not self._client:
+                self._client = httpx.AsyncClient(timeout=15)
+
+            path = "/trade-api/v2/portfolio/orders"
+            headers = self._sign_request("POST", path)
+            headers["Content-Type"] = "application/json"
+
+            # Sell at current market price (fill_or_kill)
+            exit_cents = pos.current_price_cents
+            order_body = {
+                "ticker": pos.ticker,
+                "action": "sell",
+                "side": pos.side,
+                "count": pos.count,
+                "type": "limit",
+                "yes_price": exit_cents if pos.side == "yes" else None,
+                "no_price": exit_cents if pos.side == "no" else None,
+                "time_in_force": "fill_or_kill",
+                "client_order_id": str(uuid.uuid4()),
+            }
+            order_body = {k: v for k, v in order_body.items() if v is not None}
+
+            resp = await self._client.post(
+                f"{self.settings.kalshi_base_url}{path}",
+                headers=headers,
+                json=order_body,
+            )
+            resp.raise_for_status()
+            order_data = resp.json().get("order", {})
+            status = order_data.get("status", "unknown")
+            filled = order_data.get("fill_count", 0) or order_data.get("fill_count_fp", 0)
+
+            if status in ("filled",) or filled > 0:
+                pnl = (exit_cents - pos.entry_price_cents) / 100.0 * pos.count
+                logger.info(f"LIVE close filled: {pos.ticker} @ {exit_cents}¢ P&L=${pnl:+.2f}")
+                return pnl
+            else:
+                logger.warning(f"Close order not filled for {pos.ticker}: {status}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Live close failed for {pos.ticker}: {e}")
+            return None
+
+    # ── Kalshi Request Signing ─────────────────────────────────
+
+    def _load_private_key(self):
+        """Load RSA private key (cached)."""
+        if not hasattr(self, '_private_key') or self._private_key is None:
+            try:
+                pem_env = os.environ.get("KALSHI_PRIVATE_KEY_PEM", "")
+                if pem_env:
+                    self._private_key = serialization.load_pem_private_key(
+                        pem_env.encode(), password=None
+                    )
+                else:
+                    key_path = self.settings.kalshi_private_key_path
+                    with open(key_path, "rb") as f:
+                        self._private_key = serialization.load_pem_private_key(
+                            f.read(), password=None
+                        )
+            except Exception as e:
+                logger.error(f"Failed to load RSA key for trading: {e}")
+                self._private_key = None
+        return self._private_key
+
+    def _sign_request(self, method: str, path: str) -> dict:
+        """Sign a Kalshi API request with RSA-PSS."""
+        if not self.settings.kalshi_api_key:
+            return {}
+        private_key = self._load_private_key()
+        if not private_key:
+            return {}
+
+        timestamp_ms = str(int(time.time() * 1000))
+        path_no_query = path.split("?")[0]
+        message = f"{timestamp_ms}{method.upper()}{path_no_query}".encode()
+
+        signature = private_key.sign(
+            message,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.DIGEST_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+        return {
+            "KALSHI-ACCESS-KEY": self.settings.kalshi_api_key,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp_ms,
+            "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode(),
+        }
 
     # ── Position Monitoring ────────────────────────────────────
 
@@ -342,12 +525,22 @@ class Trader:
         return None
 
     async def _close_position(self, trade_id: int, reason: str):
-        """Close a position and update DB."""
+        """Close a position and update DB. For live positions, sell on Kalshi first."""
         pos = self.positions.pop(trade_id, None)
         if not pos:
             return
 
         exit_price = pos.current_price_cents
+
+        # For live positions, place a sell order on Kalshi
+        if pos.mode == "live" and "settlement" not in reason:
+            result = await self._live_close(pos)
+            if result is None:
+                # Sell failed — put position back and retry next cycle
+                self.positions[trade_id] = pos
+                self._log_event("WARN", pos.ticker, f"Close failed ({reason}), will retry")
+                return
+
         pnl_per_contract = (exit_price - pos.entry_price_cents) / 100.0
         pnl = pnl_per_contract * pos.count
 

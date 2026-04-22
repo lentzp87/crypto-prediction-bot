@@ -1,6 +1,6 @@
 """
 Configuration — loads from .env with Pydantic validation.
-Adjusted for $2K bankroll.
+Adjusted for $465 bankroll.
 """
 
 from pydantic_settings import BaseSettings
@@ -28,24 +28,24 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     google_api_key: Optional[str] = None
 
-    # ── Risk Management ($2K bankroll) ─────────────────────────
-    wallet_size_usd: float = 2000.0
-    max_daily_loss_usd: float = 200.0       # 10% of wallet
-    max_positions: int = 10
-    max_trades_per_day: int = 50
+    # ── Risk Management ($465 bankroll) ─────────────────────────
+    wallet_size_usd: float = 465.0
+    max_daily_loss_usd: float = 46.0        # ~10% of wallet
+    max_positions: int = 8
+    max_trades_per_day: int = 30
     min_edge_cents: float = 3.0
-    max_single_trade_usd: float = 100.0     # 5% of wallet
+    max_single_trade_usd: float = 23.0      # ~5% of wallet
     circuit_breaker_losses: int = 3         # consecutive losses → pause
     circuit_breaker_pause_min: int = 30     # minutes to pause
 
     # ── Position Limits ────────────────────────────────────────
-    max_same_strike: int = 3                # max positions on same strike
-    max_same_window: int = 5                # max positions expiring in same 15-min window
+    max_same_strike: int = 2                # max positions on same strike
+    max_same_window: int = 3                # max positions expiring in same 15-min window
     cooldown_seconds: int = 120             # between trades on same contract series
 
-    # ── Sizing (Kelly-lite, scaled for $2K) ────────────────────
-    base_trade_size_usd: float = 40.0       # default per trade (2% of $2K)
-    max_trade_size_usd: float = 100.0       # cap per trade (5% of $2K)
+    # ── Sizing (Kelly-lite, scaled for $465) ───────────────────
+    base_trade_size_usd: float = 9.0        # default per trade (~2% of $465)
+    max_trade_size_usd: float = 23.0        # cap per trade (~5% of $465)
 
     # ── Take Profit / Stop Loss (cents) ────────────────────────
     # Tiered by entry price bucket
