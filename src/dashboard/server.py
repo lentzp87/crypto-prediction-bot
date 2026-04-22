@@ -34,6 +34,7 @@ class DashboardServer:
         self.app.router.add_get("/api/btc", self._api_btc)
         self.app.router.add_get("/api/events", self._api_events)
         self.app.router.add_get("/api/pnl_history", self._api_pnl_history)
+        self.app.router.add_get("/api/closed", self._api_closed)
         self.app.router.add_get("/api/status", self._api_status)
 
     async def start(self):
@@ -83,6 +84,10 @@ class DashboardServer:
     async def _api_pnl_history(self, request):
         """Time-series P&L for charting."""
         return web.json_response(self.db.get_pnl_history())
+
+    async def _api_closed(self, request):
+        """Closed trades history."""
+        return web.json_response(self.db.get_closed_trades(mode=self.trader.mode))
 
     async def _api_status(self, request):
         """Bot health: uptime, memory, task status."""

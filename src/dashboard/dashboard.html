@@ -105,7 +105,12 @@
     text-transform: uppercase;
     font-size: 10px;
     letter-spacing: 1px;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
   }
+  th:hover { color: #00d4aa; }
+  th .sort-arrow { margin-left: 4px; font-size: 8px; }
   td {
     padding: 8px 6px;
     border-bottom: 1px solid #0f1520;
@@ -160,6 +165,39 @@
 
   .full-width { grid-column: 1 / -1; }
   .two-col { grid-template-columns: 1fr 1fr; }
+
+  /* Tabs */
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    margin-bottom: 12px;
+    border-bottom: 1px solid #1e2a3a;
+  }
+  .tab-btn {
+    padding: 8px 16px;
+    font-size: 11px;
+    font-family: inherit;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    background: none;
+    border: none;
+    color: #6b7280;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+  }
+  .tab-btn:hover { color: #e0e6ed; }
+  .tab-btn.active {
+    color: #00d4aa;
+    border-bottom-color: #00d4aa;
+  }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .closed-table-wrap {
+    max-height: 400px;
+    overflow-y: auto;
+  }
 
   @media (max-width: 768px) {
     .grid { grid-template-columns: 1fr; }
@@ -243,7 +281,7 @@
   </div>
 </div>
 
-<!-- Row 2: Indicators -->
+<!-- Row 2: Indicators + Positions (Tabbed) -->
 <div class="grid">
   <div class="card">
     <h3>Technical Indicators</h3>
@@ -280,24 +318,54 @@
     </div>
   </div>
 
-  <!-- Open Positions -->
+  <!-- Positions Card with Tabs -->
   <div class="card">
-    <h3>Open Positions</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Contract</th>
-          <th>Side</th>
-          <th>Entry</th>
-          <th>Now</th>
-          <th>P&L</th>
-          <th>Age</th>
-        </tr>
-      </thead>
-      <tbody id="positions-body">
-        <tr><td colspan="6" style="text-align:center;color:#4b5563">No open positions</td></tr>
-      </tbody>
-    </table>
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab('open')">Open Positions</button>
+      <button class="tab-btn" onclick="switchTab('closed')">Closed Trades</button>
+    </div>
+
+    <!-- Open Positions Tab -->
+    <div id="tab-open" class="tab-panel active">
+      <table id="open-table">
+        <thead>
+          <tr>
+            <th onclick="sortTable('open-table', 0, 'str')">Contract<span class="sort-arrow"></span></th>
+            <th onclick="sortTable('open-table', 1, 'str')">Side<span class="sort-arrow"></span></th>
+            <th onclick="sortTable('open-table', 2, 'num')">Entry<span class="sort-arrow"></span></th>
+            <th onclick="sortTable('open-table', 3, 'num')">Now<span class="sort-arrow"></span></th>
+            <th onclick="sortTable('open-table', 4, 'num')">P&L<span class="sort-arrow"></span></th>
+            <th onclick="sortTable('open-table', 5, 'num')">Age<span class="sort-arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="positions-body">
+          <tr><td colspan="6" style="text-align:center;color:#4b5563">No open positions</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Closed Trades Tab -->
+    <div id="tab-closed" class="tab-panel">
+      <div class="closed-table-wrap">
+        <table id="closed-table">
+          <thead>
+            <tr>
+              <th onclick="sortTable('closed-table', 0, 'str')">Contract<span class="sort-arrow"></span></th>
+              <th onclick="sortTable('closed-table', 1, 'str')">Side<span class="sort-arrow"></span></th>
+              <th onclick="sortTable('closed-table', 2, 'num')">Entry<span class="sort-arrow"></span></th>
+              <th onclick="sortTable('closed-table', 3, 'num')">Exit<span class="sort-arrow"></span></th>
+              <th onclick="sortTable('closed-table', 4, 'num')">Qty<span class="sort-arrow"></span></th>
+              <th onclick="sortTable('closed-table', 5, 'num')">P&L<span class="sort-arrow"></span></th>
+              <th onclick="sortTable('closed-table', 6, 'str')">Reason<span class="sort-arrow"></span></th>
+              <th onclick="sortTable('closed-table', 7, 'str')">Closed<span class="sort-arrow"></span></th>
+            </tr>
+          </thead>
+          <tbody id="closed-body">
+            <tr><td colspan="8" style="text-align:center;color:#4b5563">No closed trades yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -315,6 +383,7 @@
   const API_BASE = window.location.origin;
   const POLL_MS = 5000;
 
+  // ── Helpers ──────────────────────────────────────────────
   function fmt(n, dec=2) { return n != null ? Number(n).toFixed(dec) : '--'; }
   function fmtUsd(n) {
     if (n == null) return '$0.00';
@@ -331,7 +400,6 @@
     return Math.floor(s/3600) + 'h ago';
   }
   function shortTicker(t) {
-    // KXBTC15M-26APR070715-T68299.99 → T68299 07:15
     const m = t.match(/-T([\d.]+)/);
     const tm = t.match(/\d{2}[A-Z]{3}(\d{2})(\d{2})\d{2}-/);
     if (m && tm) return 'T' + Math.floor(parseFloat(m[1])) + ' ' + tm[1]+':'+tm[2];
@@ -345,6 +413,63 @@
     } catch { return null; }
   }
 
+  // ── Tab Switching ───────────────────────────────────────
+  function switchTab(which) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    if (which === 'open') {
+      document.querySelector('.tab-btn:nth-child(1)').classList.add('active');
+      document.getElementById('tab-open').classList.add('active');
+    } else {
+      document.querySelector('.tab-btn:nth-child(2)').classList.add('active');
+      document.getElementById('tab-closed').classList.add('active');
+    }
+  }
+
+  // ── Sortable Tables ─────────────────────────────────────
+  const sortState = {};
+
+  function sortTable(tableId, colIdx, type) {
+    const table = document.getElementById(tableId);
+    const tbody = table.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+
+    // Skip if it's the "no data" placeholder row
+    if (rows.length === 1 && rows[0].querySelectorAll('td').length === 1) return;
+
+    const key = tableId + '-' + colIdx;
+    const asc = sortState[key] === 'asc' ? false : true;
+    sortState[key] = asc ? 'asc' : 'desc';
+
+    // Update arrow indicators
+    table.querySelectorAll('th .sort-arrow').forEach(a => a.textContent = '');
+    const arrows = table.querySelectorAll('th');
+    if (arrows[colIdx]) {
+      arrows[colIdx].querySelector('.sort-arrow').textContent = asc ? ' ▲' : ' ▼';
+    }
+
+    rows.sort((a, b) => {
+      let aVal = a.querySelectorAll('td')[colIdx]?.textContent.trim() || '';
+      let bVal = b.querySelectorAll('td')[colIdx]?.textContent.trim() || '';
+
+      if (type === 'num') {
+        // Strip $, ¢, commas, %, 'm', 'h', 's' for numeric comparison
+        const parseNum = (v) => {
+          const n = parseFloat(v.replace(/[$¢,%mhs ]/g, '').replace(/,/g, ''));
+          return isNaN(n) ? 0 : n;
+        };
+        aVal = parseNum(aVal);
+        bVal = parseNum(bVal);
+        return asc ? aVal - bVal : bVal - aVal;
+      } else {
+        return asc ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+      }
+    });
+
+    rows.forEach(r => tbody.appendChild(r));
+  }
+
+  // ── Main Poll Loop ──────────────────────────────────────
   async function poll() {
     // Stats
     const stats = await fetchJSON('/api/stats');
@@ -403,7 +528,7 @@
       dot.className = 'status-dot ' + (btc.ready ? 'dot-green' : 'dot-yellow');
     }
 
-    // Positions
+    // Open Positions
     const positions = await fetchJSON('/api/positions');
     const tbody = document.getElementById('positions-body');
     if (positions && positions.length > 0) {
@@ -419,6 +544,26 @@
       `).join('');
     } else {
       tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#4b5563">No open positions</td></tr>';
+    }
+
+    // Closed Trades
+    const closed = await fetchJSON('/api/closed');
+    const closedBody = document.getElementById('closed-body');
+    if (closed && closed.length > 0) {
+      closedBody.innerHTML = closed.map(t => `
+        <tr>
+          <td>${shortTicker(t.ticker)}</td>
+          <td>${t.side.toUpperCase()}</td>
+          <td>${t.entry_cents}¢</td>
+          <td>${t.exit_cents != null ? t.exit_cents + '¢' : '--'}</td>
+          <td>${t.count}</td>
+          <td class="${t.pnl >= 0 ? 'positive' : 'negative'}">${fmtUsd(t.pnl)}</td>
+          <td>${t.exit_reason || '--'}</td>
+          <td>${t.closed ? t.closed.substring(5) : '--'}</td>
+        </tr>
+      `).join('');
+    } else {
+      closedBody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#4b5563">No closed trades yet</td></tr>';
     }
 
     // Events

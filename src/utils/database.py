@@ -244,6 +244,31 @@ class Database:
                 "today_closed": len(trades),
             }
 
+    def get_closed_trades(self, mode: Optional[str] = None, limit: int = 100) -> list[dict]:
+        """Return recently closed trades for the dashboard."""
+        with self._session() as s:
+            q = s.query(Trade).filter_by(status="closed")
+            if mode:
+                q = q.filter_by(mode=mode)
+            trades = q.order_by(Trade.closed_at.desc()).limit(limit).all()
+            return [
+                {
+                    "id": t.id,
+                    "ticker": t.ticker,
+                    "side": t.side,
+                    "entry_cents": t.entry_price_cents,
+                    "exit_cents": t.exit_price_cents,
+                    "count": t.count,
+                    "cost_usd": round(t.cost_usd or 0, 2),
+                    "pnl": round(t.pnl_usd or 0, 2),
+                    "exit_reason": t.exit_reason or "",
+                    "mode": t.mode,
+                    "opened": str(t.created_at)[:19] if t.created_at else "",
+                    "closed": str(t.closed_at)[:19] if t.closed_at else "",
+                }
+                for t in trades
+            ]
+
     # ── Skipped Signals ────────────────────────────────────────
 
     def record_skip(self, ticker: str, side: str, edge_cents: float,
