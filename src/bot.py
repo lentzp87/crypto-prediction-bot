@@ -83,10 +83,12 @@ class CryptoPredictionBot:
         assets = list(self.engines.keys())
         logger.info(f"Assets: {', '.join(assets)}")
 
-        # Verify live trading auth before starting
+        # Verify live trading auth and sync existing positions
         if self.trader.mode == "live":
             auth_ok = await self.trader.verify_live_auth()
-            if not auth_ok:
+            if auth_ok:
+                await self.trader.sync_kalshi_positions()
+            else:
                 logger.warning("Live auth failed — bot will run but orders will fail")
 
         tasks = [

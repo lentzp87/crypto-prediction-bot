@@ -134,6 +134,82 @@ class Trader:
             self._log_event("ERROR", "KALSHI", f"Live auth failed: {e} — using paper mode")
             return False
 
+    async def sync_kalshi_positions(self):
+        """
+        Load existing positions from Kalshi API into internal tracking.
+        Called on startup so the bot can manage positions across restarts.
+        """
+        if self.mode != "live":
+            return
+        try:
+            if not self._client:
+                self._client = httpx.AsyncClient(timeout=15)
+
+            path = "/trade-api/v2/portfolio/positions"
+            headers = self._sign_request("GET", path)
+            resp = await self._client.get(
+                f"{self.settings.kalshi_base_url}{path}",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            positions = data.get("market_positions", [])
+            synced = 0
+
+            for p in positions:
+                ticker = p.get("ticker", "")
+                pos_fp = float(p.get("position_fp", 0))
+                if pos_fp == 0:
+                    continue  # flat position, skip
+
+                exposure = float(p.get("market_exposure_dollars", "0"))
+                count = int(abs(pos_fp))
+                side = "yes" if pos_fp > 0 else "no"
+
+                # Calculate average entry price
+                if count > 0:
+                    entry_cents = int((exposure / count) * 100)
+                else:
+                    entry_cents = 50
+
+                # Use a synthetic trade_id (negative to distinguish from DB trades)
+                trade_id = -(synced + 1)
+
+                # Record in DB so it persists
+                trade_id = self.db.record_trade(
+                    ticker=ticker,
+                    side=side,
+                    entry_price_cents=entry_cents,
+                    count=count,
+                    cost_usd=exposure,
+                    mode="live",
+                )
+
+                position = Position(
+                    trade_id=trade_id,
+                    ticker=ticker,
+                    side=side,
+                    entry_price_cents=entry_cents,
+                    count=count,
+                    cost_usd=exposure,
+                    mode="live",
+                    current_price_cents=entry_cents,
+                    highest_price=entry_cents,
+                )
+                self.positions[trade_id] = position
+                synced += 1
+
+            if synced > 0:
+                logger.info(f"Synced {synced} existing Kalshi positions")
+                self._log_event("SYSTEM", "KALSHI", f"Synced {synced} positions from Kalshi")
+            else:
+                logger.info("No existing Kalshi positions to sync")
+
+        except Exception as e:
+            logger.error(f"Failed to sync Kalshi positions: {e}")
+            self._log_event("ERROR", "KALSHI", f"Position sync failed: {e}")
+
     # ── Trade Entry ────────────────────────────────────────────
 
     async def execute_trade(self, signal, consensus) -> Optional[int]:
