@@ -379,9 +379,9 @@ class Trader:
 
     async def _live_trade(self, signal, cost_usd: float, count: int) -> Optional[int]:
         """Place a real limit order on Kalshi."""
-        # Use bid price + 2¢ spread buffer to cross the bid-ask and actually get filled
+        # Use bid price + 3¢ spread buffer to cross the bid-ask and actually get filled
         bid_cents = int(signal.kalshi_implied * 100)
-        spread_buffer = 2  # cents to add to cross the spread
+        spread_buffer = 3  # cents to add to cross the spread
         entry_cents = min(bid_cents + spread_buffer, 95)  # cap at 95¢
 
         try:
@@ -418,7 +418,12 @@ class Trader:
 
             order_id = order_data.get("order_id", "")
             status = order_data.get("status", "unknown")
-            filled = order_data.get("fill_count", 0) or order_data.get("fill_count_fp", 0)
+            # fill_count_fp can be a string — coerce to int safely
+            raw_filled = order_data.get("fill_count", 0) or order_data.get("fill_count_fp", 0)
+            try:
+                filled = int(float(raw_filled)) if raw_filled else 0
+            except (ValueError, TypeError):
+                filled = 0
 
             if status in ("filled", "resting") or filled > 0:
                 actual_count = filled if filled > 0 else count
@@ -512,7 +517,11 @@ class Trader:
             resp.raise_for_status()
             order_data = resp.json().get("order", {})
             status = order_data.get("status", "unknown")
-            filled = order_data.get("fill_count", 0) or order_data.get("fill_count_fp", 0)
+            raw_filled = order_data.get("fill_count", 0) or order_data.get("fill_count_fp", 0)
+            try:
+                filled = int(float(raw_filled)) if raw_filled else 0
+            except (ValueError, TypeError):
+                filled = 0
 
             if status in ("filled",) or filled > 0:
                 pnl = (exit_cents - pos.entry_price_cents) / 100.0 * pos.count
