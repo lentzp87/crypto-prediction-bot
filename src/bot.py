@@ -185,13 +185,29 @@ class CryptoPredictionBot:
             f"edge={signal.edge_cents:.1f}¢ | {votes_str}"
         )
 
-        # Paper-mode fallback: if ALL models failed (0/0), auto-follow
-        # high-edge signals so paper trading can actually run
+        # Auto-approve bypass for massive vol mispricings (>15¢ edge)
+        # If our HAR+jump model sees a huge edge, the vol mispricing is
+        # too large to ignore — trade it regardless of AI opinion.
         should_trade = consensus.action == "FOLLOW"
+        if (not should_trade
+                and signal.edge_cents >= 15
+                and signal.minutes_to_close >= 5):
+            should_trade = True
+            self.trader._log_event(
+                "AUTO", signal.ticker,
+                f"AUTO-FOLLOW: edge={signal.edge_cents:.1f}¢ (>15¢ bypass) "
+                f"AI was {consensus.action} ({consensus.follow_count}/{consensus.active_count})"
+            )
+            logger.info(
+                f"AUTO-APPROVE {signal.ticker}: {signal.edge_cents:.1f}¢ edge "
+                f"bypasses AI consensus (was {consensus.action})"
+            )
+
+        # Paper-mode fallback: if ALL models failed (0/0), auto-follow
         if (not should_trade
                 and consensus.active_count == 0
                 and self.trader.mode == "paper"
-                and signal.edge_cents >= 5):
+                and signal.edge_cents >= 8):
             should_trade = True
             self.trader._log_event(
                 "AI", signal.ticker,

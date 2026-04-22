@@ -43,12 +43,12 @@ class ConsensusResult:
     active_count: int
 
 
-VALIDATION_PROMPT = """You are an EXTREMELY skeptical crypto prediction market risk manager. Your job is to find reasons to REJECT trades. You assume most signals are noise until proven otherwise.
+VALIDATION_PROMPT = """You are a disciplined crypto prediction market trader evaluating a volatility-based edge signal.
 
 SIGNAL:
 - Contract: {ticker}
 - Side: {side} | Price: {price}¢ | Edge: {edge:.1f}¢
-- Our PURE VOLATILITY model says {probability:.1f}%, market implies {implied:.1f}%
+- Our HAR volatility model says {probability:.1f}%, market implies {implied:.1f}%
 - Current price: ${current_price} vs strike ${strike}
 - Time to expiry: {minutes:.1f} minutes
 
@@ -56,18 +56,19 @@ CONTEXT:
 - RSI: {rsi} | Momentum: {momentum}% | Volatility: {vol}%
 - VWAP: ${vwap} | EMA9/21: ${ema9}/${ema21}
 
-CRITICAL: Our model uses ONLY realized volatility to estimate probability. The edge comes from our vol estimate differing from the market's implied vol. Technicals are NOT part of our edge — the market already prices those in.
+Our model uses a HAR (Heterogeneous Autoregressive) realized volatility model with jump detection. The edge comes from our vol estimate differing from the market's implied vol.
 
-DECISION FRAMEWORK — default to SKIP:
-- SKIP if edge < 8¢ — too small to overcome spread, slippage, and model error
-- SKIP if time to expiry < 3 minutes — not enough time for vol edge to play out
-- SKIP if volatility is very low (< 0.05%) — vol estimate unreliable with small sample
-- SKIP if the edge seems to come from a temporary price spike rather than genuine vol mispricing
-- FOLLOW only if: edge >= 8¢ AND time >= 5 min AND vol is reasonable (0.05%+)
-- The ONLY reason to FOLLOW is a genuine volatility mispricing — NOT a momentum play
-- When in doubt, ALWAYS SKIP — our historical win rate on marginal trades is 16%
+DECISION FRAMEWORK:
+- SKIP if edge < 8¢ — too small after spread and slippage
+- SKIP if time to expiry < 3 minutes — not enough time
+- SKIP if volatility is near zero — vol estimate unreliable
+- FOLLOW if edge >= 8¢ AND time >= 5 min AND the setup looks reasonable
+- FOLLOW with higher confidence if edge >= 15¢ — large vol mispricing
+- Consider technicals as CONTEXT (not edge source): if price is trending hard against the trade, lower confidence but don't auto-reject
 
-We have a {side} signal. Is the volatility model SIGNIFICANTLY more accurate than the market here?
+This is a new model — evaluate each trade on its own merits.
+
+We have a {side} signal. Does this look like a genuine vol mispricing worth trading?
 
 Respond with ONLY valid JSON (no markdown):
 {{"action": "FOLLOW" or "SKIP", "confidence": 0.0-1.0, "side": "{side}", "reasoning": "one sentence", "risk_level": "low" or "medium" or "high"}}"""
