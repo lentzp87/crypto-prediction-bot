@@ -640,10 +640,12 @@ class Trader:
                 positions_to_close = []
 
                 for trade_id, pos in list(self.positions.items()):
-                    # Get current market price
+                    # Get current market price (returns YES probability)
                     price = await get_market_price(pos.ticker)
                     if price is not None:
-                        pos.update_price(price)
+                        # For NO positions, our value = 100 - YES probability
+                        effective_price = (100 - price) if pos.side == "no" else price
+                        pos.update_price(effective_price)
 
                     # Check exit conditions
                     exit_reason = self._check_exit(pos)
