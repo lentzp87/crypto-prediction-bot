@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     kalshi_api_key: str = ""
     kalshi_private_key_path: str = "./keys/kalshi.pem"
     kalshi_env: str = Field(default="prod", description="'demo' or 'prod' — which API for market data")
-    trading_mode: str = Field(default="live", description="'paper' for simulated trades, 'live' for real orders")
+    trading_mode: str = Field(default="paper", description="'paper' for simulated trades, 'live' for real orders — SUSPENDED")
 
     @property
     def kalshi_base_url(self) -> str:
@@ -33,8 +33,8 @@ class Settings(BaseSettings):
     max_daily_loss_usd: float = 200.0       # hard stop at -$200
     max_positions: int = 16
     max_trades_per_day: int = 9999          # unlimited — daily loss limit is the real guard
-    min_edge_cents: float = 10.0            # 10¢ min for live — 2¢ slippage buffer over paper's 8¢
-    max_single_trade_usd: float = 15.0      # ~3% of wallet — smaller for live slippage
+    min_edge_cents: float = 8.0             # paper slippage simulation handles the rest
+    max_single_trade_usd: float = 15.0      # ~3% of wallet
     circuit_breaker_losses: int = 5         # consecutive losses → pause
     circuit_breaker_pause_min: int = 10     # minutes to pause (was 30, too long)
 

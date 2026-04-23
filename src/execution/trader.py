@@ -345,9 +345,13 @@ class Trader:
 
         return None
 
+    # ── Max contracts: Kalshi orderbooks are thin, limit to avoid
+    # eating through the book and getting terrible fills ──
+    MAX_CONTRACTS = 10  # hard cap regardless of dollar math
+
     def _calculate_size(self, signal, consensus) -> tuple[float, int]:
-        """Kelly-lite position sizing with max-loss cap."""
-        base_size = self.settings.base_trade_size_usd  # $9
+        """Kelly-lite position sizing with max-loss cap + contract cap."""
+        base_size = self.settings.base_trade_size_usd
 
         confidence_mult = 1.0
 
@@ -372,20 +376,33 @@ class Trader:
         count = max(1, int(trade_size / cost_per_contract))
 
         # ── Max loss cap: never risk more than $15 on a single position ──
-        # If all contracts go to zero, we lose cost_per_contract * count
         max_loss_usd = 15.0
         max_contracts_by_loss = max(1, int(max_loss_usd / cost_per_contract))
         count = min(count, max_contracts_by_loss)
+
+        # ── Hard contract cap: Kalshi books are thin ──
+        count = min(count, self.MAX_CONTRACTS)
 
         actual_cost = count * cost_per_contract
 
         return actual_cost, count
 
-    # ── Paper Trading ──────────────────────────────────────────
+    # ── Paper Trading (realistic simulation) ─────────────────
+
+    # Simulate real-world friction so paper results ≈ live results
+    PAPER_ENTRY_SLIPPAGE = 3   # ¢ worse on entry (crossing the spread)
+    PAPER_EXIT_SLIPPAGE = 2    # ¢ worse on exit (hitting the bid)
+    # These match the live trade spread buffers exactly
 
     async def _paper_trade(self, signal, cost_usd: float, count: int, consensus=None) -> int:
-        """Record a paper trade."""
-        entry_cents = int(signal.kalshi_implied * 100)
+        """Record a paper trade with simulated slippage."""
+        raw_entry = int(signal.kalshi_implied * 100)
+
+        # Simulate crossing the spread on entry (pay more)
+        entry_cents = min(raw_entry + self.PAPER_ENTRY_SLIPPAGE, 95)
+
+        # Recalculate cost with slipped entry
+        cost_usd = count * (entry_cents / 100.0)
 
         trade_id = self.db.record_trade(
             ticker=signal.ticker,
@@ -416,13 +433,13 @@ class Trader:
         self._log_event(
             "TRADE",
             signal.ticker,
-            f"Paper {signal.side.upper()} @ {entry_cents}¢ × {count} "
-            f"(${cost_usd:.2f}) edge={signal.edge_cents:.1f}¢"
+            f"Paper {signal.side.upper()} @ {entry_cents}¢ (raw={raw_entry}¢ +{self.PAPER_ENTRY_SLIPPAGE}¢ slip) "
+            f"× {count} (${cost_usd:.2f}) edge={signal.edge_cents:.1f}¢"
         )
 
         logger.info(
             f"Paper trade: {signal.side} {signal.ticker} "
-            f"@ {entry_cents}¢ × {count} = ${cost_usd:.2f}"
+            f"@ {entry_cents}¢ (raw {raw_entry}¢) × {count} = ${cost_usd:.2f}"
         )
 
         return trade_id
@@ -755,6 +772,11 @@ class Trader:
                 return
         elif pos.mode == "live" and near_settlement:
             self._log_event("EXIT", pos.ticker, f"Near settlement ({exit_price}¢) — letting Kalshi auto-settle")
+
+        # Paper mode: simulate exit slippage (hitting the bid)
+        # Don't apply slippage at settlement (1¢/99¢) — those are auto-resolved
+        if pos.mode == "paper" and not near_settlement and "settlement" not in reason:
+            exit_price = max(1, exit_price - self.PAPER_EXIT_SLIPPAGE)
 
         pnl_per_contract = (exit_price - pos.entry_price_cents) / 100.0
         pnl = pnl_per_contract * pos.count
