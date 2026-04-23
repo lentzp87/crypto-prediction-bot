@@ -107,6 +107,9 @@ class Trader:
         self.kalshi_portfolio: float = 0.0
         self._balance_updated_at: float = 0
 
+        # Cooldown tracking: ticker_series → timestamp of last close
+        self._cooldowns: dict[str, float] = {}
+
     @property
     def mode(self) -> str:
         return getattr(self.settings, 'trading_mode', 'paper')
@@ -342,6 +345,13 @@ class Trader:
         )
         if same_series >= self.settings.max_same_window:
             return f"Max positions in same window ({same_series})"
+
+        # ── Cooldown: don't re-enter a contract series we just traded ──
+        series_key = signal.ticker[:25]  # e.g. "KXBTCD-26APR2317-T78"
+        last_close = self._cooldowns.get(series_key, 0)
+        cooldown_remaining = self.settings.cooldown_seconds - (time.time() - last_close)
+        if cooldown_remaining > 0:
+            return f"Cooldown on {series_key} ({cooldown_remaining:.0f}s remaining)"
 
         return None
 
@@ -780,6 +790,14 @@ class Trader:
 
         pnl_per_contract = (exit_price - pos.entry_price_cents) / 100.0
         pnl = pnl_per_contract * pos.count
+
+        # Record cooldown so we don't immediately re-enter this contract
+        series_key = pos.ticker[:25]
+        self._cooldowns[series_key] = time.time()
+
+        # Prune old cooldowns (keep dict from growing forever)
+        cutoff = time.time() - 600  # 10 min
+        self._cooldowns = {k: v for k, v in self._cooldowns.items() if v > cutoff}
 
         self.db.close_trade(
             trade_id=trade_id,

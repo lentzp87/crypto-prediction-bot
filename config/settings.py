@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # ── Position Limits ────────────────────────────────────────
     max_same_strike: int = 2                # max positions on same strike
     max_same_window: int = 6                # max positions expiring in same 15-min window
-    cooldown_seconds: int = 120             # between trades on same contract series
+    cooldown_seconds: int = 300             # 5 min between trades on same contract series
 
     # ── Sizing (Kelly-lite, scaled for $465) ───────────────────
     base_trade_size_usd: float = 7.0        # default per trade (~1.5% of $465) — conservative for live
