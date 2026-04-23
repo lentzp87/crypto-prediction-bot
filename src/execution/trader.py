@@ -41,6 +41,7 @@ class Position:
     # Current market state
     current_price_cents: int = 0
     unrealized_pnl: float = 0.0
+    close_attempts: int = 0
 
     # Trailing stop state
     highest_price: int = 0
@@ -578,7 +579,9 @@ class Trader:
             headers["Content-Type"] = "application/json"
 
             # For sells, price LOWER to cross the spread (accept the bid)
-            exit_cents = max(1, pos.current_price_cents - 2)
+            # Use a bigger discount (5¢) to ensure fill — better to fill at a worse
+            # price than to loop retrying forever
+            exit_cents = max(1, pos.current_price_cents - 5)
             order_body = {
                 "ticker": pos.ticker,
                 "action": "sell",
@@ -609,13 +612,25 @@ class Trader:
             if status in ("filled",) or filled > 0:
                 pnl = (exit_cents - pos.entry_price_cents) / 100.0 * pos.count
                 logger.info(f"LIVE close filled: {pos.ticker} @ {exit_cents}¢ P&L=${pnl:+.2f}")
+                self._log_event("LIVE_EXIT", pos.ticker,
+                    f"Sold {pos.side} @ {exit_cents}¢ × {pos.count} P&L=${pnl:+.2f}")
                 return pnl
             else:
-                logger.warning(f"Close order not filled for {pos.ticker}: {status}")
+                logger.warning(f"Close order not filled for {pos.ticker}: status={status} "
+                              f"side={pos.side} price={exit_cents}¢ count={pos.count}")
+                self._log_event("CLOSE_FAIL", pos.ticker,
+                    f"Not filled: {pos.side} @ {exit_cents}¢ × {pos.count} status={status}")
                 return None
 
+        except httpx.HTTPStatusError as e:
+            body = e.response.text[:200] if e.response else ""
+            logger.error(f"Live close API error for {pos.ticker}: {e.response.status_code} {body}")
+            self._log_event("CLOSE_ERROR", pos.ticker,
+                f"API {e.response.status_code}: {body[:100]}")
+            return None
         except Exception as e:
             logger.error(f"Live close failed for {pos.ticker}: {e}")
+            self._log_event("CLOSE_ERROR", pos.ticker, f"Failed: {e}")
             return None
 
     # ── Kalshi Request Signing ─────────────────────────────────
@@ -774,12 +789,19 @@ class Trader:
         # Skip selling if price is near settlement (99¢/1¢) — let Kalshi auto-settle
         near_settlement = exit_price >= 97 or exit_price <= 3
         if pos.mode == "live" and not near_settlement and "settlement" not in reason:
+            pos.close_attempts += 1
             result = await self._live_close(pos)
             if result is None:
-                # Sell failed — put position back and retry next cycle
-                self.positions[trade_id] = pos
-                self._log_event("WARN", pos.ticker, f"Close failed ({reason}), will retry")
-                return
+                if pos.close_attempts >= 5:
+                    # Give up after 5 attempts — force close as paper to unblock
+                    self._log_event("FORCE_CLOSE", pos.ticker,
+                        f"Giving up after {pos.close_attempts} close attempts — recording as loss")
+                else:
+                    # Retry next cycle
+                    self.positions[trade_id] = pos
+                    self._log_event("WARN", pos.ticker,
+                        f"Close failed attempt {pos.close_attempts}/5 ({reason}), will retry")
+                    return
         elif pos.mode == "live" and near_settlement:
             self._log_event("EXIT", pos.ticker, f"Near settlement ({exit_price}¢) — letting Kalshi auto-settle")
 
