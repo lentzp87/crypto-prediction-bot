@@ -358,7 +358,7 @@ class Trader:
 
     # ── Max contracts: Kalshi orderbooks are thin, limit to avoid
     # eating through the book and getting terrible fills ──
-    MAX_CONTRACTS = 10  # hard cap regardless of dollar math
+    MAX_CONTRACTS = 5   # hard cap — Kalshi books are very thin
 
     def _calculate_size(self, signal, consensus) -> tuple[float, int]:
         """Kelly-lite position sizing with max-loss cap + contract cap."""
@@ -472,41 +472,50 @@ class Trader:
             headers = self._sign_request("POST", path)
             headers["Content-Type"] = "application/json"
 
-            client_order_id = str(uuid.uuid4())
+            # Buy in chunks of 3 to avoid insufficient_resting_volume errors
+            total_filled = 0
+            remaining = count
+            chunk_size = min(remaining, 3)
+            order_id = ""
 
-            order_body = {
-                "ticker": signal.ticker,
-                "action": "buy",
-                "side": signal.side,
-                "count": count,
-                "type": "limit",
-                "yes_price": entry_cents if signal.side == "yes" else None,
-                "no_price": entry_cents if signal.side == "no" else None,
-                "time_in_force": "fill_or_kill",  # immediate fill or cancel
-                "client_order_id": client_order_id,
-            }
-            # Remove None price field
-            order_body = {k: v for k, v in order_body.items() if v is not None}
+            while remaining > 0:
+                buy_count = min(remaining, chunk_size)
+                order_body = {
+                    "ticker": signal.ticker,
+                    "action": "buy",
+                    "side": signal.side,
+                    "count": buy_count,
+                    "type": "limit",
+                    "yes_price": entry_cents if signal.side == "yes" else None,
+                    "no_price": entry_cents if signal.side == "no" else None,
+                    "time_in_force": "fill_or_kill",
+                    "client_order_id": str(uuid.uuid4()),
+                }
+                order_body = {k: v for k, v in order_body.items() if v is not None}
 
-            resp = await self._client.post(
-                f"{self.settings.kalshi_base_url}{path}",
-                headers=headers,
-                json=order_body,
-            )
-            resp.raise_for_status()
-            order_data = resp.json().get("order", {})
+                resp = await self._client.post(
+                    f"{self.settings.kalshi_base_url}{path}",
+                    headers=headers,
+                    json=order_body,
+                )
+                resp.raise_for_status()
+                order_data = resp.json().get("order", {})
+                order_id = order_data.get("order_id", order_id)
+                status = order_data.get("status", "unknown")
+                raw_filled = order_data.get("fill_count", 0) or order_data.get("fill_count_fp", 0)
+                try:
+                    filled = int(float(raw_filled)) if raw_filled else 0
+                except (ValueError, TypeError):
+                    filled = 0
 
-            order_id = order_data.get("order_id", "")
-            status = order_data.get("status", "unknown")
-            # fill_count_fp can be a string — coerce to int safely
-            raw_filled = order_data.get("fill_count", 0) or order_data.get("fill_count_fp", 0)
-            try:
-                filled = int(float(raw_filled)) if raw_filled else 0
-            except (ValueError, TypeError):
-                filled = 0
+                if filled > 0:
+                    total_filled += filled
+                    remaining -= filled
+                else:
+                    break  # no more liquidity
 
-            if status in ("filled", "resting") or filled > 0:
-                actual_count = filled if filled > 0 else count
+            if total_filled > 0:
+                actual_count = total_filled
                 actual_cost = actual_count * (entry_cents / 100.0)
 
                 trade_id = self.db.record_trade(
@@ -579,47 +588,72 @@ class Trader:
             headers["Content-Type"] = "application/json"
 
             # For sells, price LOWER to cross the spread (accept the bid)
-            # Use a bigger discount (5¢) to ensure fill — better to fill at a worse
-            # price than to loop retrying forever
+            # Use a bigger discount (5¢) to ensure fill
             exit_cents = max(1, pos.current_price_cents - 5)
-            order_body = {
-                "ticker": pos.ticker,
-                "action": "sell",
-                "side": pos.side,
-                "count": pos.count,
-                "type": "limit",
-                "yes_price": exit_cents if pos.side == "yes" else None,
-                "no_price": exit_cents if pos.side == "no" else None,
-                "time_in_force": "fill_or_kill",
-                "client_order_id": str(uuid.uuid4()),
-            }
-            order_body = {k: v for k, v in order_body.items() if v is not None}
 
-            resp = await self._client.post(
-                f"{self.settings.kalshi_base_url}{path}",
-                headers=headers,
-                json=order_body,
-            )
-            resp.raise_for_status()
-            order_data = resp.json().get("order", {})
-            status = order_data.get("status", "unknown")
-            raw_filled = order_data.get("fill_count", 0) or order_data.get("fill_count_fp", 0)
-            try:
-                filled = int(float(raw_filled)) if raw_filled else 0
-            except (ValueError, TypeError):
-                filled = 0
+            # Try to sell remaining contracts (supports partial fills across retries)
+            remaining = pos.count
+            total_filled = 0
 
-            if status in ("filled",) or filled > 0:
-                pnl = (exit_cents - pos.entry_price_cents) / 100.0 * pos.count
-                logger.info(f"LIVE close filled: {pos.ticker} @ {exit_cents}¢ P&L=${pnl:+.2f}")
+            # Sell in smaller chunks if needed — Kalshi books are thin
+            chunk_size = min(remaining, 3)  # max 3 at a time
+
+            while remaining > 0:
+                sell_count = min(remaining, chunk_size)
+                order_body = {
+                    "ticker": pos.ticker,
+                    "action": "sell",
+                    "side": pos.side,
+                    "count": sell_count,
+                    "type": "limit",
+                    "yes_price": exit_cents if pos.side == "yes" else None,
+                    "no_price": exit_cents if pos.side == "no" else None,
+                    "time_in_force": "fill_or_kill",
+                    "client_order_id": str(uuid.uuid4()),
+                }
+                order_body = {k: v for k, v in order_body.items() if v is not None}
+
+                resp = await self._client.post(
+                    f"{self.settings.kalshi_base_url}{path}",
+                    headers=headers,
+                    json=order_body,
+                )
+                resp.raise_for_status()
+                order_data = resp.json().get("order", {})
+                status = order_data.get("status", "unknown")
+                raw_filled = order_data.get("fill_count", 0) or order_data.get("fill_count_fp", 0)
+                try:
+                    filled = int(float(raw_filled)) if raw_filled else 0
+                except (ValueError, TypeError):
+                    filled = 0
+
+                if filled > 0:
+                    total_filled += filled
+                    remaining -= filled
+                else:
+                    # This chunk didn't fill — stop trying
+                    break
+
+            if total_filled > 0:
+                pnl = (exit_cents - pos.entry_price_cents) / 100.0 * total_filled
+                logger.info(f"LIVE close filled: {pos.ticker} @ {exit_cents}¢ × {total_filled} P&L=${pnl:+.2f}")
                 self._log_event("LIVE_EXIT", pos.ticker,
-                    f"Sold {pos.side} @ {exit_cents}¢ × {pos.count} P&L=${pnl:+.2f}")
+                    f"Sold {pos.side} @ {exit_cents}¢ × {total_filled}/{pos.count} P&L=${pnl:+.2f}")
+
+                if remaining > 0:
+                    # Partial close — update position with remaining contracts
+                    pos.count = remaining
+                    pos.cost_usd = remaining * (pos.entry_price_cents / 100.0)
+                    self.positions[pos.trade_id] = pos  # put back with reduced count
+                    self._log_event("PARTIAL", pos.ticker,
+                        f"{remaining} contracts remaining — will retry")
+
                 return pnl
             else:
-                logger.warning(f"Close order not filled for {pos.ticker}: status={status} "
+                logger.warning(f"Close order not filled for {pos.ticker}: "
                               f"side={pos.side} price={exit_cents}¢ count={pos.count}")
                 self._log_event("CLOSE_FAIL", pos.ticker,
-                    f"Not filled: {pos.side} @ {exit_cents}¢ × {pos.count} status={status}")
+                    f"Not filled: {pos.side} @ {exit_cents}¢ × {pos.count}")
                 return None
 
         except httpx.HTTPStatusError as e:
