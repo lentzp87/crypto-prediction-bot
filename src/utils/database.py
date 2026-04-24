@@ -82,7 +82,7 @@ class Trade(Base):
     spread_cents = Column(Integer, nullable=True)     # bid-ask spread at entry
     asset = Column(String(10), nullable=True)          # "BTC" or "ETH"
     contract_type = Column(String(10), nullable=True)  # "15m", "hourly", "daily"
-    bot_version = Column(String(20), default="2.0.0")
+    bot_version = Column(String(20), default="3.0.0")
     created_at = Column(TIMESTAMP, server_default=func.now())
     closed_at = Column(TIMESTAMP, nullable=True)
 
@@ -512,6 +512,201 @@ class Database:
             else:
                 s.add(BotState(key=key, value=value))
             s.commit()
+
+    # ── ADAPTIVE LEARNING ENGINE ─────────────────────────────────
+    # These methods let the bot learn from its own results and adapt
+    # in real-time: which edges are real, which hours are profitable,
+    # which AI models are accurate, and how to size positions.
+
+    def get_model_accuracy(self) -> dict:
+        """
+        Track each AI model's historical accuracy.
+        Returns {model_name: {trades, correct, accuracy, avg_pnl_when_follow}}.
+        Used by validator to weight votes.
+        """
+        with self._session() as s:
+            # Get AI decisions joined with trade outcomes
+            decisions = s.query(AIDecision).all()
+            trades = s.query(Trade).filter_by(status="closed").all()
+
+            # Build ticker → pnl lookup
+            ticker_pnl = {}
+            for t in trades:
+                ticker_pnl[t.ticker] = t.pnl_usd or 0
+
+            models = {
+                "gpt": {"trades": 0, "correct": 0, "total_pnl": 0},
+                "claude": {"trades": 0, "correct": 0, "total_pnl": 0},
+                "gemini": {"trades": 0, "correct": 0, "total_pnl": 0},
+            }
+
+            for d in decisions:
+                pnl = ticker_pnl.get(d.ticker)
+                if pnl is None:
+                    continue  # no trade for this decision
+
+                won = pnl > 0
+
+                for model_key, action_col in [
+                    ("gpt", d.gpt_action),
+                    ("claude", d.claude_action),
+                    ("gemini", d.gemini_action),
+                ]:
+                    if action_col in ("FOLLOW", "SKIP"):
+                        models[model_key]["trades"] += 1
+                        # Model was "correct" if:
+                        # - It said FOLLOW and the trade won
+                        # - It said SKIP and the trade lost
+                        if (action_col == "FOLLOW" and won) or (action_col == "SKIP" and not won):
+                            models[model_key]["correct"] += 1
+                        if action_col == "FOLLOW":
+                            models[model_key]["total_pnl"] += pnl
+
+            result = {}
+            for name, data in models.items():
+                n = data["trades"]
+                result[name] = {
+                    "trades": n,
+                    "correct": data["correct"],
+                    "accuracy": round(data["correct"] / n * 100, 1) if n > 0 else 50.0,
+                    "avg_pnl_when_follow": round(data["total_pnl"] / max(1, n), 3),
+                }
+            return result
+
+    def get_hourly_performance(self, mode: Optional[str] = None) -> dict:
+        """
+        Win rate and P&L by hour of day (UTC).
+        Lets bot learn which hours are profitable.
+        """
+        with self._session() as s:
+            q = s.query(Trade).filter_by(status="closed")
+            if mode:
+                q = q.filter_by(mode=mode)
+            trades = q.all()
+
+            hours = {h: {"trades": 0, "wins": 0, "pnl": 0.0} for h in range(24)}
+            for t in trades:
+                if t.created_at:
+                    try:
+                        h = t.created_at.hour
+                    except Exception:
+                        continue
+                    hours[h]["trades"] += 1
+                    if (t.pnl_usd or 0) > 0:
+                        hours[h]["wins"] += 1
+                    hours[h]["pnl"] += t.pnl_usd or 0
+
+            result = {}
+            for h, data in hours.items():
+                n = data["trades"]
+                result[h] = {
+                    "trades": n,
+                    "wins": data["wins"],
+                    "win_rate": round(data["wins"] / n * 100, 1) if n > 0 else 0,
+                    "pnl": round(data["pnl"], 2),
+                    "profitable": data["pnl"] > 0 if n >= 5 else True,  # need 5+ trades to judge
+                }
+            return result
+
+    def get_adaptive_params(self, mode: Optional[str] = None) -> dict:
+        """
+        Master learning method — returns adaptive parameters the bot
+        should use RIGHT NOW based on all historical data.
+
+        This is the brain of the learning system.
+        """
+        edge_cal = self.get_edge_calibration(mode=mode)
+        hourly = self.get_hourly_performance(mode=mode)
+        model_acc = self.get_model_accuracy()
+        contract_stats = self.get_contract_type_stats(mode=mode)
+        asset_stats = self.get_asset_stats(mode=mode)
+
+        # ── Determine best minimum edge ──
+        # Find the lowest edge bucket that's profitable with 10+ trades
+        best_min_edge = 10.0  # default
+        for bucket_name in ["6-8", "8-10", "10-12", "12-15", "15-20", "20+"]:
+            bucket = edge_cal.get(bucket_name, {})
+            if bucket.get("trades", 0) >= 10:
+                if bucket.get("win_rate", 0) >= 55 and bucket.get("total_pnl", 0) > 0:
+                    # This bucket is profitable — can lower min edge
+                    ranges = {"6-8": 6, "8-10": 8, "10-12": 10, "12-15": 12, "15-20": 15, "20+": 20}
+                    best_min_edge = min(best_min_edge, ranges.get(bucket_name, 10))
+                    break  # found the lowest profitable bucket
+
+        # ── Determine unprofitable hours ──
+        bad_hours = [h for h, data in hourly.items()
+                     if data["trades"] >= 10 and not data["profitable"]]
+
+        # ── Best contract type ──
+        best_contract = "15m"  # default
+        best_pnl = -999
+        for ct, data in contract_stats.items():
+            if data.get("trades", 0) >= 10 and data.get("total_pnl", 0) > best_pnl:
+                best_pnl = data["total_pnl"]
+                best_contract = ct
+
+        # ── Model weights (normalized accuracy) ──
+        total_acc = sum(m.get("accuracy", 50) for m in model_acc.values())
+        model_weights = {}
+        for name, data in model_acc.items():
+            if total_acc > 0:
+                model_weights[name] = round(data["accuracy"] / total_acc, 3)
+            else:
+                model_weights[name] = 0.333
+
+        # ── Sizing multiplier based on recent performance ──
+        # If last 20 trades are profitable, size up. If losing, size down.
+        recent_trades = self._get_recent_trades(20, mode=mode)
+        recent_pnl = sum(t.get("pnl", 0) for t in recent_trades)
+        recent_wins = sum(1 for t in recent_trades if t.get("pnl", 0) > 0)
+        recent_wr = recent_wins / len(recent_trades) * 100 if recent_trades else 50
+
+        if recent_wr >= 65 and recent_pnl > 0:
+            sizing_mult = 1.5   # hot streak — size up
+        elif recent_wr >= 55:
+            sizing_mult = 1.2   # solid — slight bump
+        elif recent_wr <= 35:
+            sizing_mult = 0.5   # cold streak — cut size
+        elif recent_wr <= 45:
+            sizing_mult = 0.75  # underperforming — reduce
+        else:
+            sizing_mult = 1.0
+
+        # ── Asset preference ──
+        asset_preference = {}
+        for asset_name, data in asset_stats.items():
+            if data.get("trades", 0) >= 10:
+                asset_preference[asset_name] = {
+                    "profitable": data.get("total_pnl", 0) > 0,
+                    "win_rate": data.get("win_rate", 50),
+                    "size_mult": 1.2 if data.get("win_rate", 50) >= 60 else (0.7 if data.get("win_rate", 50) < 45 else 1.0),
+                }
+            else:
+                asset_preference[asset_name] = {"profitable": True, "win_rate": 50, "size_mult": 1.0}
+
+        return {
+            "learned_min_edge": best_min_edge,
+            "bad_hours_utc": bad_hours,
+            "best_contract_type": best_contract,
+            "model_weights": model_weights,
+            "model_accuracy": model_acc,
+            "sizing_multiplier": sizing_mult,
+            "recent_win_rate": round(recent_wr, 1),
+            "recent_pnl": round(recent_pnl, 2),
+            "asset_preference": asset_preference,
+            "total_closed_trades": sum(d.get("trades", 0) for d in edge_cal.values()),
+            "learning_active": sum(d.get("trades", 0) for d in edge_cal.values()) >= 20,
+        }
+
+    def _get_recent_trades(self, n: int, mode: Optional[str] = None) -> list[dict]:
+        """Get the N most recent closed trades."""
+        with self._session() as s:
+            q = s.query(Trade).filter_by(status="closed")
+            if mode:
+                q = q.filter_by(mode=mode)
+            trades = q.order_by(Trade.closed_at.desc()).limit(n).all()
+            return [{"pnl": t.pnl_usd or 0, "ticker": t.ticker, "edge": t.edge_cents or 0}
+                    for t in trades]
 
     # ── P&L History (for charting) ─────────────────────────────
 

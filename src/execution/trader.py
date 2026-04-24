@@ -126,6 +126,10 @@ class Trader:
         # Cooldown tracking: ticker_series → timestamp of last close
         self._cooldowns: dict[str, float] = {}
 
+        # Adaptive learning — updated by bot's learning loop
+        self.adaptive_sizing_mult: float = 1.0
+        self.asset_preference: dict = {}
+
     @property
     def mode(self) -> str:
         return getattr(self.settings, 'trading_mode', 'paper')
@@ -334,11 +338,11 @@ class Trader:
         # ── Price sanity: reject bad risk/reward ──────────────
         entry_cents = int(signal.kalshi_implied * 100)
 
-        # Only trade 35-65¢ range — genuinely contested, near the money
-        if entry_cents < 35:
-            return f"Price too low ({entry_cents}¢ < 35¢) — longshot"
-        if entry_cents > 65:
-            return f"Price too high ({entry_cents}¢ > 65¢) — bad risk/reward"
+        # WIDENED: trade 20-80¢ range (was 35-65¢) — more aggressive
+        if entry_cents < 20:
+            return f"Price too low ({entry_cents}¢ < 20¢) — longshot"
+        if entry_cents > 80:
+            return f"Price too high ({entry_cents}¢ > 80¢) — bad risk/reward"
 
         # ── Duplicate ticker check: NEVER buy a contract we already hold ──
         # This prevents position stacking across restarts
@@ -394,7 +398,7 @@ class Trader:
 
     # ── Max contracts: Kalshi orderbooks are thin, limit to avoid
     # eating through the book and getting terrible fills ──
-    MAX_CONTRACTS = 3   # slightly more aggressive — chunked into 2s
+    MAX_CONTRACTS = 5   # aggressive — still chunked 1 at a time for thin books
 
     def _calculate_size(self, signal, consensus) -> tuple[float, int]:
         """Kelly-lite position sizing with max-loss cap + contract cap."""
@@ -421,6 +425,16 @@ class Trader:
         spread = signal.indicators.get("spread", 0) if hasattr(signal, 'indicators') else 0
         if spread > 4:
             quality_score -= 0.2  # wide spread = worse quality
+
+        # Apply adaptive sizing multiplier (learned from recent performance)
+        quality_score *= self.adaptive_sizing_mult
+
+        # Apply asset preference multiplier (learned from asset-specific win rates)
+        ticker = signal.ticker if hasattr(signal, 'ticker') else ""
+        asset = "ETH" if "ETH" in ticker else "BTC"
+        asset_pref = self.asset_preference.get(asset, {})
+        asset_mult = asset_pref.get("size_mult", 1.0) if asset_pref else 1.0
+        quality_score *= asset_mult
 
         trade_size = min(
             base_size * quality_score,

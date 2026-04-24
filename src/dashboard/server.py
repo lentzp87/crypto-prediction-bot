@@ -40,6 +40,7 @@ class DashboardServer:
         self.app.router.add_get("/api/contract_types", self._api_contract_types)
         self.app.router.add_get("/api/calibration", self._api_calibration)
         self.app.router.add_get("/api/assets", self._api_assets)
+        self.app.router.add_get("/api/learning", self._api_learning)
         self.app.router.add_post("/api/reset", self._api_reset)
 
     async def start(self):
@@ -109,6 +110,10 @@ class DashboardServer:
     async def _api_assets(self, request):
         """BTC vs ETH performance breakdown."""
         return web.json_response(self.db.get_asset_stats(mode=self.trader.mode))
+
+    async def _api_learning(self, request):
+        """Adaptive learning engine status — what the bot has learned."""
+        return web.json_response(self.db.get_adaptive_params(mode=self.trader.mode))
 
     async def _api_reset(self, request):
         """Wipe all trade history for a fresh start."""

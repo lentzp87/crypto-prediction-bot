@@ -78,6 +78,15 @@ Respond with ONLY valid JSON (no markdown):
 class AIValidator:
     """Manages triple-model consensus validation for trade signals."""
 
+    # Map model display names to weight keys
+    MODEL_WEIGHT_KEYS = {
+        "gpt-4.1-nano": "gpt",
+        "gpt-4o-mini": "gpt",
+        "claude-haiku-4.5": "claude",
+        "gemini-2.5-flash-lite": "gemini",
+        "gemini-2.0-flash": "gemini",
+    }
+
     def __init__(self, settings):
         self.settings = settings
         self._openai_key = settings.openai_api_key
@@ -85,6 +94,9 @@ class AIValidator:
         self._google_key = settings.google_api_key
         self.total_validations = 0
         self.total_cost_estimate = 0.0
+        # Model weights — updated by learning engine, default to equal
+        self.model_weights: dict[str, float] = {"gpt": 0.333, "claude": 0.333, "gemini": 0.333}
+        self.model_accuracy: dict = {}
 
     def _build_prompt(self, signal) -> str:
         """Build the validation prompt from a TradeSignal."""
@@ -163,11 +175,23 @@ class AIValidator:
 
         return consensus
 
+    def update_weights(self, model_weights: dict, model_accuracy: dict):
+        """Called by the bot to update model weights from learning data."""
+        if model_weights:
+            self.model_weights = model_weights
+        if model_accuracy:
+            self.model_accuracy = model_accuracy
+        logger.info(f"AI weights updated: {self.model_weights}")
+
     def _calculate_consensus(self, models: list[ModelResponse], default_side: str) -> ConsensusResult:
         """
-        Consensus rules (2/3 majority — data shows 2/3 outperforms 3/3):
-        - 2+ of 3 active FOLLOW → FOLLOW
-        - Anything else → SKIP
+        WEIGHTED consensus — models earn influence by being right.
+
+        Instead of simple 2/3 majority, each model's vote is weighted
+        by its historical accuracy. A model with 70% accuracy gets more
+        say than one with 50%.
+
+        Fallback: if not enough learning data, use simple 2/3 majority.
         """
         active = [m for m in models if m.action in ("FOLLOW", "SKIP")]
         follow = [m for m in active if m.action == "FOLLOW"]
@@ -176,13 +200,53 @@ class AIValidator:
         action = "SKIP"
         n = len(active)
 
-        # 2/3 majority: if at least 2 models say FOLLOW, we follow
-        if n >= 2 and len(follow) >= 2:
-            action = "FOLLOW"
+        # Check if we have enough data for weighted voting
+        has_learning = any(
+            self.model_accuracy.get(k, {}).get("trades", 0) >= 20
+            for k in ["gpt", "claude", "gemini"]
+        )
 
-        # Average confidence of agreeing models
+        if has_learning and n >= 2:
+            # WEIGHTED VOTING: sum up weights of FOLLOW vs SKIP
+            follow_weight = 0.0
+            skip_weight = 0.0
+
+            for m in active:
+                weight_key = self.MODEL_WEIGHT_KEYS.get(m.model, "")
+                weight = self.model_weights.get(weight_key, 0.333)
+
+                if m.action == "FOLLOW":
+                    # Scale weight by model's confidence too
+                    follow_weight += weight * max(0.5, m.confidence)
+                else:
+                    skip_weight += weight * max(0.5, m.confidence)
+
+            # FOLLOW if weighted follow votes exceed 45% of total weight
+            # (lower threshold than 50% = more aggressive)
+            total_weight = follow_weight + skip_weight
+            if total_weight > 0 and (follow_weight / total_weight) >= 0.45:
+                action = "FOLLOW"
+
+            logger.info(
+                f"Weighted vote: FOLLOW={follow_weight:.3f} SKIP={skip_weight:.3f} "
+                f"→ {action} (threshold=45%)"
+            )
+        else:
+            # Fallback: simple 2/3 majority
+            if n >= 2 and len(follow) >= 2:
+                action = "FOLLOW"
+
+        # Weighted confidence of agreeing models
         if follow and action == "FOLLOW":
-            avg_conf = sum(m.confidence for m in follow) / len(follow)
+            weights = []
+            confs = []
+            for m in follow:
+                wk = self.MODEL_WEIGHT_KEYS.get(m.model, "")
+                w = self.model_weights.get(wk, 0.333)
+                weights.append(w)
+                confs.append(m.confidence)
+            total_w = sum(weights)
+            avg_conf = sum(w * c for w, c in zip(weights, confs)) / total_w if total_w > 0 else 0
         else:
             avg_conf = 0.0
 

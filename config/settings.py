@@ -1,6 +1,6 @@
 """
 Configuration — loads from .env with Pydantic validation.
-Adjusted for $465 bankroll.
+Adjusted for $525 bankroll. V3.0 — aggressive + adaptive.
 """
 
 from pydantic_settings import BaseSettings
@@ -28,34 +28,34 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     google_api_key: Optional[str] = None
 
-    # ── Risk Management ($465 bankroll) ─────────────────────────
-    wallet_size_usd: float = 465.0
-    max_daily_loss_usd: float = 50.0        # hard stop at -$50
-    max_positions: int = 5
-    max_trades_per_day: int = 40            # daily loss limit is the real guard
-    min_edge_cents: float = 10.0            # raised for quality entries only
-    max_single_trade_usd: float = 10.0      # ~2% of wallet
-    circuit_breaker_losses: int = 4         # consecutive losses → pause
-    circuit_breaker_pause_min: int = 15     # minutes to pause after 4 consecutive losses
+    # ── Risk Management ($525 bankroll) — AGGRESSIVE ─────────────
+    wallet_size_usd: float = 525.0
+    max_daily_loss_usd: float = 100.0       # aggressive: $100/day (was $50)
+    max_positions: int = 8                  # more at-bats (was 5)
+    max_trades_per_day: int = 60            # more volume (was 40)
+    min_edge_cents: float = 8.0             # lowered for more trades (was 10)
+    max_single_trade_usd: float = 20.0      # ~4% of wallet (was $10)
+    circuit_breaker_losses: int = 5         # more tolerant (was 4)
+    circuit_breaker_pause_min: int = 10     # shorter pause (was 15)
 
     # ── Position Limits ────────────────────────────────────────
-    max_same_strike: int = 2                # max positions on same strike
-    max_same_window: int = 2                # max positions expiring in same 15-min window
-    cooldown_seconds: int = 300             # 5 min between trades on same contract series
+    max_same_strike: int = 3                # allow more stacking (was 2)
+    max_same_window: int = 3                # allow more in same window (was 2)
+    cooldown_seconds: int = 180             # 3 min cooldown (was 5 min)
 
-    # ── Sizing (Kelly-lite, scaled for $465) ───────────────────
-    base_trade_size_usd: float = 5.0        # default per trade (~1% of $465) — conservative for live
-    max_trade_size_usd: float = 10.0        # cap per trade (~2% of $465)
+    # ── Sizing (Kelly-lite, scaled for $525) ───────────────────
+    base_trade_size_usd: float = 8.0        # bigger base (was $5)
+    max_trade_size_usd: float = 20.0        # higher cap (was $10)
 
     # ── Asset-Specific Configs ─────────────────────────────────
-    btc_min_edge_cents: float = 10.0
-    btc_max_spread_cents: float = 6.0
+    btc_min_edge_cents: float = 8.0         # lowered (was 10)
+    btc_max_spread_cents: float = 7.0       # slightly wider tolerance (was 6)
     btc_jump_multiplier_cap: float = 2.0
 
-    eth_min_edge_cents: float = 12.0       # ETH needs wider edge (more volatile)
-    eth_max_spread_cents: float = 5.0      # ETH books are thinner
+    eth_min_edge_cents: float = 10.0        # lowered (was 12)
+    eth_max_spread_cents: float = 6.0       # slightly wider (was 5)
     eth_jump_multiplier_cap: float = 2.5
-    max_contracts_per_trade: int = 3         # hard cap per order — Kalshi books are thin
+    max_contracts_per_trade: int = 5         # more contracts (was 3)
 
     # ── Take Profit / Stop Loss (cents) ────────────────────────
     # Tiered by entry price bucket
@@ -95,9 +95,9 @@ class Settings(BaseSettings):
     db_path: str = "data/crypto_bot.db"
 
     # ── Scanner Intervals ──────────────────────────────────────
-    kalshi_scan_interval_sec: int = 45
+    kalshi_scan_interval_sec: int = 30      # faster scanning (was 45)
     funding_poll_interval_sec: int = 300    # 5 min
-    exit_monitor_interval_sec: int = 30
+    exit_monitor_interval_sec: int = 20     # faster exit checks (was 30)
     stats_interval_sec: int = 300           # 5 min
 
     # ── Memory Management (for Render) ─────────────────────────

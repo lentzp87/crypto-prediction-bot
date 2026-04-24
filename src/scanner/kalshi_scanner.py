@@ -160,6 +160,10 @@ class KalshiScanner:
         self._last_discovery: float = 0
         self._burst_scan_requested: bool = False
 
+        # Adaptive learning — updated by bot's learning loop
+        self.adaptive_min_edge: Optional[float] = None  # overrides settings if set
+        self.bad_hours: list[int] = []  # UTC hours to avoid trading
+
     def request_burst_scan(self):
         """Called by momentum detector to trigger immediate scan."""
         self._burst_scan_requested = True
@@ -390,6 +394,14 @@ class KalshiScanner:
         """Evaluate a single contract for trading edge."""
         if engine is None:
             engine = self.btc_engine
+
+        # Skip bad hours (learned from historical data)
+        if self.bad_hours:
+            from datetime import datetime, timezone
+            current_hour = datetime.now(timezone.utc).hour
+            if current_hour in self.bad_hours:
+                return None
+
         est = engine.estimate_probability(
             strike_price=contract.strike_price,
             minutes_to_close=contract.minutes_to_close,
@@ -410,16 +422,15 @@ class KalshiScanner:
             )
             return None
 
-        # Only trade contracts in the 35-65¢ range — genuinely contested strikes.
-        # Cheap contracts are longshots (16% win rate historically).
-        # Expensive contracts have bad risk/reward.
+        # WIDENED: trade contracts in the 20-80¢ range (was 35-65¢)
+        # More aggressive — captures more edge opportunities
         mid_price = (contract.yes_bid + contract.yes_ask) // 2
-        if mid_price < 35 or mid_price > 65:
-            logger.debug(f"Skip {contract.ticker}: price {mid_price}¢ outside 35-65¢ range")
+        if mid_price < 20 or mid_price > 80:
+            logger.debug(f"Skip {contract.ticker}: price {mid_price}¢ outside 20-80¢ range")
             return None
 
-        # Spread filter — skip illiquid contracts
-        if contract.spread > 6:
+        # Spread filter — skip illiquid contracts (widened from 6 to 8)
+        if contract.spread > 8:
             logger.debug(f"Skip {contract.ticker}: spread too wide ({contract.spread}¢)")
             return None
 
@@ -438,7 +449,8 @@ class KalshiScanner:
         yes_edge = (est.probability - yes_entry_price) * 100
         no_edge = ((1 - est.probability) - no_entry_price) * 100
 
-        min_edge = self.settings.min_edge_cents
+        # Use adaptive min edge if learning engine has enough data
+        min_edge = self.adaptive_min_edge if self.adaptive_min_edge else self.settings.min_edge_cents
         best_edge = max(yes_edge, no_edge)
         best_side = "yes" if yes_edge >= no_edge else "no"
 

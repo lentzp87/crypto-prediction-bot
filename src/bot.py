@@ -31,11 +31,13 @@ class CryptoPredictionBot:
     - Trade execution + position management
     - Dashboard server
     - Notifications
+    - ADAPTIVE LEARNING ENGINE — learns from its own results
     """
 
     def __init__(self, settings: Settings):
         self.settings = settings
         self.db = Database(settings.db_path)
+        self._adaptive_params: dict = {}  # updated by learning loop
 
         # BTC engine
         self.btc_engine = BTCEngine(settings)
@@ -92,6 +94,9 @@ class CryptoPredictionBot:
             else:
                 logger.warning("Live auth failed — bot will run but orders will fail")
 
+        # Bootstrap learning data before first scan
+        await self._refresh_learning()
+
         tasks = [
             asyncio.create_task(self.btc_engine.start(), name="btc_engine"),
             asyncio.create_task(self.btc_engine.poll_funding_rate(), name="btc_funding"),
@@ -99,6 +104,7 @@ class CryptoPredictionBot:
             asyncio.create_task(self.trader.monitor_positions(self._get_market_price), name="exit_monitor"),
             asyncio.create_task(self._stats_loop(), name="stats_loop"),
             asyncio.create_task(self._notification_loop(), name="notification_loop"),
+            asyncio.create_task(self._learning_loop(), name="learning_loop"),
         ]
 
         # Add ETH engine tasks if enabled
@@ -300,3 +306,51 @@ class CryptoPredictionBot:
             stats = self.trader.to_dict()
             stats["price"] = self.btc_engine.price
             await self.notifier.notify_status(stats)
+
+    # ── ADAPTIVE LEARNING ──────────────────────────────────────
+
+    async def _learning_loop(self):
+        """Refresh learning data every 10 minutes."""
+        while self._running:
+            await asyncio.sleep(600)  # 10 min
+            try:
+                await self._refresh_learning()
+            except Exception as e:
+                logger.error(f"Learning loop error: {e}")
+
+    async def _refresh_learning(self):
+        """Pull adaptive params from DB and push to all subsystems."""
+        try:
+            params = self.db.get_adaptive_params(mode=self.trader.mode)
+            self._adaptive_params = params
+
+            # Feed model weights to AI validator
+            self.ai_validator.update_weights(
+                model_weights=params.get("model_weights", {}),
+                model_accuracy=params.get("model_accuracy", {}),
+            )
+
+            # Feed sizing multiplier to trader
+            self.trader.adaptive_sizing_mult = params.get("sizing_multiplier", 1.0)
+            self.trader.asset_preference = params.get("asset_preference", {})
+
+            # Feed learned min edge to scanner
+            if params.get("learning_active", False):
+                learned_edge = params.get("learned_min_edge", 10.0)
+                # Don't go below 6¢ even if data says so — need some minimum quality
+                self.scanner.adaptive_min_edge = max(6.0, learned_edge)
+
+            # Log bad hours
+            bad_hours = params.get("bad_hours_utc", [])
+            self.scanner.bad_hours = bad_hours
+
+            status = "ACTIVE" if params.get("learning_active") else "WARMING UP"
+            logger.info(
+                f"Learning [{status}]: min_edge={params.get('learned_min_edge', '?')}¢ "
+                f"sizing={params.get('sizing_multiplier', 1.0):.1f}x "
+                f"recent_WR={params.get('recent_win_rate', '?')}% "
+                f"bad_hours={bad_hours or 'none'} "
+                f"weights={params.get('model_weights', {})}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to refresh learning data: {e}")
