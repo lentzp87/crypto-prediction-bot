@@ -476,7 +476,7 @@ class Trader:
             # Kalshi books are very thin — even 3 can fail
             total_filled = 0
             remaining = count
-            chunk_size = min(remaining, 2)
+            chunk_size = 1
             order_id = ""
 
             while remaining > 0:
@@ -597,7 +597,7 @@ class Trader:
             total_filled = 0
 
             # Sell in smaller chunks — Kalshi books are very thin
-            chunk_size = min(remaining, 2)  # max 2 at a time
+            chunk_size = 1  # max 2 at a time
 
             while remaining > 0:
                 sell_count = min(remaining, chunk_size)
@@ -822,7 +822,7 @@ class Trader:
 
         # For live positions, place a sell order on Kalshi
         # Skip selling if price is near settlement (99¢/1¢) — let Kalshi auto-settle
-        near_settlement = exit_price >= 97 or exit_price <= 3
+        near_settlement = exit_price >= 90 or exit_price <= 10
         # For 15M contracts near expiry, skip the sell — let Kalshi auto-settle
         is_15m = "15M" in pos.ticker
         if is_15m and pos.age_minutes >= 14:
