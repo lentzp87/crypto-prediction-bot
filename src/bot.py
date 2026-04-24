@@ -185,17 +185,17 @@ class CryptoPredictionBot:
             f"edge={signal.edge_cents:.1f}¢ | {votes_str}"
         )
 
-        # Auto-approve bypass for massive vol mispricings (>15¢ edge)
-        # If our HAR+jump model sees a huge edge, the vol mispricing is
+        # Auto-approve bypass for large vol mispricings (>12¢ edge)
+        # If our HAR+jump model sees a big edge, the vol mispricing is
         # too large to ignore — trade it regardless of AI opinion.
         should_trade = consensus.action == "FOLLOW"
         if (not should_trade
-                and signal.edge_cents >= 15
+                and signal.edge_cents >= 12
                 and signal.minutes_to_close >= 5):
             should_trade = True
             self.trader._log_event(
                 "AUTO", signal.ticker,
-                f"AUTO-FOLLOW: edge={signal.edge_cents:.1f}¢ (>15¢ bypass) "
+                f"AUTO-FOLLOW: edge={signal.edge_cents:.1f}¢ (>12¢ bypass) "
                 f"AI was {consensus.action} ({consensus.follow_count}/{consensus.active_count})"
             )
             logger.info(

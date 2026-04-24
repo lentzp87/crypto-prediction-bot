@@ -358,7 +358,7 @@ class Trader:
 
     # ── Max contracts: Kalshi orderbooks are thin, limit to avoid
     # eating through the book and getting terrible fills ──
-    MAX_CONTRACTS = 5   # hard cap — Kalshi books are very thin
+    MAX_CONTRACTS = 7   # slightly more aggressive — chunked into 2s
 
     def _calculate_size(self, signal, consensus) -> tuple[float, int]:
         """Kelly-lite position sizing with max-loss cap + contract cap."""
@@ -472,10 +472,11 @@ class Trader:
             headers = self._sign_request("POST", path)
             headers["Content-Type"] = "application/json"
 
-            # Buy in chunks of 3 to avoid insufficient_resting_volume errors
+            # Buy in chunks of 2 to avoid insufficient_resting_volume errors
+            # Kalshi books are very thin — even 3 can fail
             total_filled = 0
             remaining = count
-            chunk_size = min(remaining, 3)
+            chunk_size = min(remaining, 2)
             order_id = ""
 
             while remaining > 0:
@@ -595,8 +596,8 @@ class Trader:
             remaining = pos.count
             total_filled = 0
 
-            # Sell in smaller chunks if needed — Kalshi books are thin
-            chunk_size = min(remaining, 3)  # max 3 at a time
+            # Sell in smaller chunks — Kalshi books are very thin
+            chunk_size = min(remaining, 2)  # max 2 at a time
 
             while remaining > 0:
                 sell_count = min(remaining, chunk_size)
@@ -822,19 +823,24 @@ class Trader:
         # For live positions, place a sell order on Kalshi
         # Skip selling if price is near settlement (99¢/1¢) — let Kalshi auto-settle
         near_settlement = exit_price >= 97 or exit_price <= 3
-        if pos.mode == "live" and not near_settlement and "settlement" not in reason:
+        # For 15M contracts near expiry, skip the sell — let Kalshi auto-settle
+        is_15m = "15M" in pos.ticker
+        if is_15m and pos.age_minutes >= 14:
+            self._log_event("EXIT", pos.ticker,
+                f"15M contract near expiry ({pos.age_minutes:.0f}m) — letting Kalshi auto-settle")
+        elif pos.mode == "live" and not near_settlement and "settlement" not in reason:
             pos.close_attempts += 1
             result = await self._live_close(pos)
             if result is None:
-                if pos.close_attempts >= 5:
-                    # Give up after 5 attempts — force close as paper to unblock
+                if pos.close_attempts >= 3:
+                    # Give up after 3 attempts — let it settle or try again later
                     self._log_event("FORCE_CLOSE", pos.ticker,
                         f"Giving up after {pos.close_attempts} close attempts — recording as loss")
                 else:
                     # Retry next cycle
                     self.positions[trade_id] = pos
                     self._log_event("WARN", pos.ticker,
-                        f"Close failed attempt {pos.close_attempts}/5 ({reason}), will retry")
+                        f"Close failed attempt {pos.close_attempts}/3 ({reason}), will retry")
                     return
         elif pos.mode == "live" and near_settlement:
             self._log_event("EXIT", pos.ticker, f"Near settlement ({exit_price}¢) — letting Kalshi auto-settle")

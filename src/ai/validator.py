@@ -163,8 +163,8 @@ class AIValidator:
 
     def _calculate_consensus(self, models: list[ModelResponse], default_side: str) -> ConsensusResult:
         """
-        Consensus rules (strict — quality over quantity):
-        - 3 active + ALL 3 FOLLOW → FOLLOW (unanimous only)
+        Consensus rules (2/3 majority — data shows 2/3 outperforms 3/3):
+        - 2+ of 3 active FOLLOW → FOLLOW
         - Anything else → SKIP
         """
         active = [m for m in models if m.action in ("FOLLOW", "SKIP")]
@@ -174,8 +174,8 @@ class AIValidator:
         action = "SKIP"
         n = len(active)
 
-        # Require all 3 models active AND all 3 agree FOLLOW
-        if n >= 3 and len(follow) >= 3:
+        # 2/3 majority: if at least 2 models say FOLLOW, we follow
+        if n >= 2 and len(follow) >= 2:
             action = "FOLLOW"
 
         # Average confidence of agreeing models
