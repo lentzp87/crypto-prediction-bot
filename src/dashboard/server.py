@@ -37,6 +37,8 @@ class DashboardServer:
         self.app.router.add_get("/api/closed", self._api_closed)
         self.app.router.add_get("/api/status", self._api_status)
         self.app.router.add_get("/api/consensus", self._api_consensus)
+        self.app.router.add_get("/api/contract_types", self._api_contract_types)
+        self.app.router.add_post("/api/reset", self._api_reset)
 
     async def start(self):
         runner = web.AppRunner(self.app)
@@ -93,6 +95,21 @@ class DashboardServer:
     async def _api_consensus(self, request):
         """Consensus performance: 2/3 vs 3/3 win rates."""
         return web.json_response(self.db.get_consensus_stats())
+
+    async def _api_contract_types(self, request):
+        """P&L breakdown by contract type: 15M, hourly, daily."""
+        return web.json_response(self.db.get_contract_type_stats(mode=self.trader.mode))
+
+    async def _api_reset(self, request):
+        """Wipe all trade history for a fresh start."""
+        self.db.reset_all()
+        # Clear in-memory positions too
+        self.trader.positions.clear()
+        self.trader.consecutive_losses = 0
+        self.trader.circuit_breaker_until = 0
+        self.trader.event_log.clear()
+        self.trader._cooldowns.clear()
+        return web.json_response({"status": "ok", "message": "All history wiped"})
 
     async def _api_status(self, request):
         """Bot health: uptime, memory, task status."""

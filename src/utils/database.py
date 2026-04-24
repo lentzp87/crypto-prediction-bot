@@ -339,6 +339,55 @@ class Database:
             s.add(skip)
             s.commit()
 
+    # ── Contract Type P&L Breakdown ───────────────────────────
+
+    def get_contract_type_stats(self, mode: Optional[str] = None) -> dict:
+        """Break down win rate and P&L by contract type: 15M, hourly, daily."""
+        with self._session() as s:
+            q = s.query(Trade).filter_by(status="closed")
+            if mode:
+                q = q.filter_by(mode=mode)
+            trades = q.all()
+
+            buckets = {"15m": [], "hourly": [], "daily": []}
+            for t in trades:
+                ticker = t.ticker or ""
+                if "15M" in ticker:
+                    buckets["15m"].append(t)
+                elif "H" in ticker and "D" not in ticker:
+                    buckets["hourly"].append(t)
+                else:
+                    buckets["daily"].append(t)
+
+            stats = {}
+            for name, group in buckets.items():
+                if not group:
+                    stats[name] = {"trades": 0, "wins": 0, "win_rate": 0,
+                                   "total_pnl": 0, "avg_pnl": 0}
+                    continue
+                wins = [t for t in group if (t.pnl_usd or 0) > 0]
+                total_pnl = sum(t.pnl_usd or 0 for t in group)
+                stats[name] = {
+                    "trades": len(group),
+                    "wins": len(wins),
+                    "win_rate": round(len(wins) / len(group) * 100, 1),
+                    "total_pnl": round(total_pnl, 2),
+                    "avg_pnl": round(total_pnl / len(group), 2),
+                }
+            return stats
+
+    # ── Reset ─────────────────────────────────────────────────
+
+    def reset_all(self):
+        """Wipe all trade history for a fresh start."""
+        with self._session() as s:
+            s.query(Trade).delete()
+            s.query(Signal).delete()
+            s.query(AIDecision).delete()
+            s.query(SkippedSignal).delete()
+            s.commit()
+        logger.info("Database reset — all history wiped")
+
     # ── P&L History (for charting) ─────────────────────────────
 
     def get_pnl_history(self, limit: int = 200) -> list[dict]:
