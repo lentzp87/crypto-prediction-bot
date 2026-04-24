@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     eth_min_edge_cents: float = 12.0       # ETH needs wider edge (more volatile)
     eth_max_spread_cents: float = 5.0      # ETH books are thinner
     eth_jump_multiplier_cap: float = 2.5
+    max_contracts_per_trade: int = 3         # hard cap per order — Kalshi books are thin
 
     # ── Take Profit / Stop Loss (cents) ────────────────────────
     # Tiered by entry price bucket

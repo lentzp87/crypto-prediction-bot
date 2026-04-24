@@ -42,6 +42,7 @@ class Position:
     current_price_cents: int = 0
     unrealized_pnl: float = 0.0
     close_attempts: int = 0
+    minutes_to_close: float = 0.0  # actual contract expiry, not position age
 
     # Trailing stop state
     highest_price: int = 0
@@ -414,7 +415,7 @@ class Trader:
         count = min(count, max_contracts_by_loss)
 
         # ── Hard contract cap: Kalshi books are thin ──
-        count = min(count, self.MAX_CONTRACTS)
+        count = min(count, getattr(self.settings, 'max_contracts_per_trade', self.MAX_CONTRACTS))
 
         actual_cost = count * cost_per_contract
 
@@ -428,11 +429,11 @@ class Trader:
     # These match the live trade spread buffers exactly
 
     async def _paper_trade(self, signal, cost_usd: float, count: int, consensus=None) -> int:
-        """Record a paper trade with simulated slippage."""
+        """Record a paper trade — signal already uses executable ask price."""
         raw_entry = int(signal.kalshi_implied * 100)
 
-        # Simulate crossing the spread on entry (pay more)
-        entry_cents = min(raw_entry + self.PAPER_ENTRY_SLIPPAGE, 95)
+        # Signal already uses ask price (executable), add 1¢ for realism
+        entry_cents = min(raw_entry + 1, 95)
 
         # Recalculate cost with slipped entry
         cost_usd = count * (entry_cents / 100.0)
@@ -460,6 +461,7 @@ class Trader:
             mode="paper",
             current_price_cents=entry_cents,
             highest_price=entry_cents,
+            minutes_to_close=signal.minutes_to_close,
         )
         self.positions[trade_id] = position
 
@@ -481,10 +483,9 @@ class Trader:
 
     async def _live_trade(self, signal, cost_usd: float, count: int, consensus=None) -> Optional[int]:
         """Place a real limit order on Kalshi."""
-        # Use bid price + 3¢ spread buffer to cross the bid-ask and actually get filled
-        bid_cents = int(signal.kalshi_implied * 100)
-        spread_buffer = 3  # cents to add to cross the spread
-        entry_cents = min(bid_cents + spread_buffer, 95)  # cap at 95¢
+        # Signal already carries the executable ask price from the scanner.
+        # Add 1¢ tolerance to ensure fill, but no more — edge was calculated at ask.
+        entry_cents = min(int(signal.kalshi_implied * 100) + 1, 95)
 
         try:
             if not self._client:
@@ -564,6 +565,7 @@ class Trader:
                     mode="live",
                     current_price_cents=entry_cents,
                     highest_price=entry_cents,
+                    minutes_to_close=signal.minutes_to_close,
                 )
                 self.positions[trade_id] = position
 
@@ -795,15 +797,15 @@ class Trader:
         entry = pos.entry_price_cents
         profit_cents = price - entry
 
-        # ── Time-aware exits for 15M contracts ──
+        # ── Time-aware exits ──
+        # Use actual contract time remaining, not position age
+        actual_remaining = pos.minutes_to_close - pos.age_minutes
         is_15m = "15M" in pos.ticker
-        if is_15m:
-            # Late contract: if profitable and < 3 min left, take it
-            if pos.age_minutes >= 12 and profit_cents > 0:
-                return f"time_exit (profitable at {pos.age_minutes:.0f}min, locking in +{profit_cents}¢)"
-            # Very late: exit regardless if < 1 min left
-            if pos.age_minutes >= 14:
-                return f"time_exit (expiring at {pos.age_minutes:.0f}min, P&L={profit_cents:+d}¢)"
+
+        if is_15m and actual_remaining <= 3 and profit_cents > 0:
+            return f"time_exit (profitable, {actual_remaining:.0f}min left, locking in +{profit_cents}¢)"
+        if is_15m and actual_remaining <= 1:
+            return f"time_exit ({actual_remaining:.0f}min left, P&L={profit_cents:+d}¢)"
 
         # Take profit
         if price >= pos.tp_target:
@@ -854,7 +856,7 @@ class Trader:
 
         # For live positions, place a sell order on Kalshi
         # Skip selling if price is near settlement (99¢/1¢) — let Kalshi auto-settle
-        near_settlement = exit_price >= 90 or exit_price <= 10
+        near_settlement = exit_price >= 97 or exit_price <= 3
         # For 15M contracts near expiry, skip the sell — let Kalshi auto-settle
         is_15m = "15M" in pos.ticker
         if is_15m and pos.age_minutes >= 14:
