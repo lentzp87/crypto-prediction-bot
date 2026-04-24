@@ -31,16 +31,20 @@ class KalshiContract:
     ticker: str
     strike_price: float
     close_time: datetime
-    yes_price: int          # cents (0-100)
-    no_price: int           # cents
+    yes_bid: int           # cents - what you can sell YES for
+    yes_ask: int           # cents - what you must pay for YES
+    no_bid: int            # cents - what you can sell NO for
+    no_ask: int            # cents - what you must pay for NO
+    spread: int            # cents - yes_ask - yes_bid
     minutes_to_close: float
     volume: int = 0
     open_interest: int = 0
 
     @property
     def implied_probability(self) -> float:
-        """Market-implied probability from YES price."""
-        return self.yes_price / 100.0
+        """Mid-market implied probability."""
+        mid = (self.yes_bid + self.yes_ask) / 2.0
+        return mid / 100.0
 
 
 @dataclass
@@ -55,6 +59,7 @@ class TradeSignal:
     minutes_to_close: float
     indicators: dict
     probability_details: dict
+    spread: int = 0
     timestamp: float = field(default_factory=time.time)
 
 
@@ -328,30 +333,41 @@ class KalshiScanner:
                     continue
 
                 # Kalshi API v2 returns prices in dollars as strings
-                # Try new format first (dollars), then fall back to old (cents)
+                # Parse all four prices (bid/ask for YES and NO)
                 yes_bid_str = market.get("yes_bid_dollars", "")
                 yes_ask_str = market.get("yes_ask_dollars", "")
                 no_bid_str = market.get("no_bid_dollars", "")
-                last_str = market.get("last_price_dollars", "")
+                no_ask_str = market.get("no_ask_dollars", "")
 
-                if yes_bid_str and float(yes_bid_str) > 0:
-                    yes_price = int(float(yes_bid_str) * 100)
-                elif yes_ask_str and float(yes_ask_str) > 0:
-                    yes_price = int(float(yes_ask_str) * 100)
-                elif last_str and float(last_str) > 0:
-                    yes_price = int(float(last_str) * 100)
-                else:
-                    # Old API format (cents)
-                    yes_price = market.get("yes_bid", 0) or market.get("last_price", 50)
+                # Parse all four prices
+                yes_bid = int(float(yes_bid_str) * 100) if yes_bid_str and float(yes_bid_str) > 0 else 0
+                yes_ask = int(float(yes_ask_str) * 100) if yes_ask_str and float(yes_ask_str) > 0 else 0
+                no_bid = int(float(no_bid_str) * 100) if no_bid_str and float(no_bid_str) > 0 else 0
+                no_ask = int(float(no_ask_str) * 100) if no_ask_str and float(no_ask_str) > 0 else 0
 
-                no_price = 100 - yes_price
+                # Fallback to old format
+                if yes_bid == 0 and yes_ask == 0:
+                    old_bid = market.get("yes_bid", 0) or market.get("last_price", 50)
+                    yes_bid = old_bid
+                    yes_ask = old_bid  # no ask available, use bid
+
+                # Derive missing prices
+                if no_bid == 0:
+                    no_bid = max(0, 100 - yes_ask)
+                if no_ask == 0:
+                    no_ask = max(0, 100 - yes_bid)
+
+                spread = max(0, yes_ask - yes_bid)
 
                 contracts.append(KalshiContract(
                     ticker=ticker,
                     strike_price=strike_price,
                     close_time=close_time,
-                    yes_price=yes_price,
-                    no_price=no_price,
+                    yes_bid=yes_bid,
+                    yes_ask=yes_ask,
+                    no_bid=no_bid,
+                    no_ask=no_ask,
+                    spread=spread,
                     minutes_to_close=minutes_to_close,
                     volume=market.get("volume", 0),
                     open_interest=market.get("open_interest", 0),
@@ -397,14 +413,30 @@ class KalshiScanner:
         # Only trade contracts in the 35-65¢ range — genuinely contested strikes.
         # Cheap contracts are longshots (16% win rate historically).
         # Expensive contracts have bad risk/reward.
-        if contract.yes_price < 35 or contract.yes_price > 65:
-            logger.debug(f"Skip {contract.ticker}: price {contract.yes_price}¢ outside 35-65¢ range")
+        mid_price = (contract.yes_bid + contract.yes_ask) // 2
+        if mid_price < 35 or mid_price > 65:
+            logger.debug(f"Skip {contract.ticker}: price {mid_price}¢ outside 35-65¢ range")
             return None
 
-        # Check YES side edge
-        yes_edge = (est.probability - contract.implied_probability) * 100
-        # Check NO side edge
-        no_edge = ((1 - est.probability) - (contract.no_price / 100.0)) * 100
+        # Spread filter — skip illiquid contracts
+        if contract.spread > 6:
+            logger.debug(f"Skip {contract.ticker}: spread too wide ({contract.spread}¢)")
+            return None
+
+        # Volume filter — skip dead contracts
+        if contract.volume < 1 and contract.minutes_to_close > 30:
+            logger.debug(f"Skip {contract.ticker}: no volume")
+            return None
+
+        # EXECUTABLE EDGE: use ask price (what we'd actually pay), not bid/mid
+        # Buying YES: we pay yes_ask
+        # Buying NO: we pay no_ask
+        yes_entry_price = contract.yes_ask / 100.0  # executable entry for YES
+        no_entry_price = contract.no_ask / 100.0    # executable entry for NO
+
+        # Edge = our probability - executable entry price (in cents)
+        yes_edge = (est.probability - yes_entry_price) * 100
+        no_edge = ((1 - est.probability) - no_entry_price) * 100
 
         min_edge = self.settings.min_edge_cents
         best_edge = max(yes_edge, no_edge)
@@ -424,6 +456,7 @@ class KalshiScanner:
             logger.info(
                 f"Edge {contract.ticker}: {best_side} {best_edge:+.1f}¢ "
                 f"(prob={est.probability:.0%}, mkt={mkt_prob:.0%}, "
+                f"spread={contract.spread}¢ "
                 f"HAR={har_vol:.3f}%, vol={our_vol:.3f}%, z={est.z_score:+.2f}, "
                 f"{contract.minutes_to_close:.0f}min{jump_tag}) "
                 f"{'→ SIGNAL' if best_edge >= min_edge else '→ below min'}"
@@ -437,7 +470,7 @@ class KalshiScanner:
                 strike_price=contract.strike_price,
                 side="yes",
                 our_probability=est.probability,
-                kalshi_implied=contract.implied_probability,
+                kalshi_implied=yes_entry_price,
                 edge_cents=yes_edge,
                 minutes_to_close=contract.minutes_to_close,
                 indicators=engine.to_dict(),
@@ -451,6 +484,7 @@ class KalshiScanner:
                     "distance": est.distance,
                     "scaled_vol": est.scaled_vol,
                 },
+                spread=contract.spread,
             )
         elif no_edge >= min_edge:
             signal = TradeSignal(
@@ -458,7 +492,7 @@ class KalshiScanner:
                 strike_price=contract.strike_price,
                 side="no",
                 our_probability=1 - est.probability,
-                kalshi_implied=contract.no_price / 100.0,
+                kalshi_implied=no_entry_price,
                 edge_cents=no_edge,
                 minutes_to_close=contract.minutes_to_close,
                 indicators=engine.to_dict(),
@@ -472,6 +506,7 @@ class KalshiScanner:
                     "distance": -est.distance,
                     "scaled_vol": est.scaled_vol,
                 },
+                spread=contract.spread,
             )
 
         if signal:

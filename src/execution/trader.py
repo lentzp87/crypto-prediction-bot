@@ -64,25 +64,35 @@ class Position:
 
     @property
     def tp_target(self) -> int:
-        """Take profit target based on entry price bucket."""
+        """Dynamic take profit based on entry price and edge quality."""
         ep = self.entry_price_cents
         if ep <= 39:
             return ep + 20
         elif ep <= 69:
             return ep + 25
-        else:  # 70-85
+        else:
             return 97
 
     @property
     def sl_target(self) -> int:
-        """Stop loss target based on entry price bucket."""
+        """Dynamic stop loss — tighter for aged positions."""
         ep = self.entry_price_cents
+        age = self.age_minutes
+
+        # Base stop loss by entry bucket
         if ep <= 39:
-            return max(1, ep - 10)
+            base_sl = max(1, ep - 10)
         elif ep <= 69:
-            return max(1, ep - 12)
+            base_sl = max(1, ep - 12)
         else:
-            return max(1, ep - 8)
+            base_sl = max(1, ep - 8)
+
+        # Tighten stop as position ages (for 15M contracts)
+        if age > 10:
+            # After 10 min, tighten by 3¢
+            base_sl = max(base_sl, ep - 5)
+
+        return max(1, base_sl)
 
 
 class Trader:
@@ -358,24 +368,36 @@ class Trader:
 
     # ── Max contracts: Kalshi orderbooks are thin, limit to avoid
     # eating through the book and getting terrible fills ──
-    MAX_CONTRACTS = 7   # slightly more aggressive — chunked into 2s
+    MAX_CONTRACTS = 3   # slightly more aggressive — chunked into 2s
 
     def _calculate_size(self, signal, consensus) -> tuple[float, int]:
         """Kelly-lite position sizing with max-loss cap + contract cap."""
         base_size = self.settings.base_trade_size_usd
 
-        confidence_mult = 1.0
+        # Trade quality score — edge is just one ingredient
+        quality_score = 1.0
 
-        # Scale up for strong signals
-        if signal.edge_cents >= 10:
-            confidence_mult += 0.3
-        if consensus.confidence >= 0.8:
-            confidence_mult += 0.2
+        # Edge quality
+        if signal.edge_cents >= 14:
+            quality_score += 0.3  # strong edge
+        elif signal.edge_cents >= 10:
+            quality_score += 0.1  # decent edge
+
+        # AI confidence
+        if consensus.confidence >= 0.75:
+            quality_score += 0.2
+
+        # Unanimous agreement bonus
         if consensus.follow_count == consensus.active_count and consensus.active_count >= 3:
-            confidence_mult += 0.2  # all 3 models agree
+            quality_score += 0.2
+
+        # Spread penalty (if available from signal)
+        spread = signal.indicators.get("spread", 0) if hasattr(signal, 'indicators') else 0
+        if spread > 4:
+            quality_score -= 0.2  # wide spread = worse quality
 
         trade_size = min(
-            base_size * confidence_mult,
+            base_size * quality_score,
             self.settings.max_trade_size_usd,
         )
 
@@ -772,6 +794,16 @@ class Trader:
         price = pos.current_price_cents
         entry = pos.entry_price_cents
         profit_cents = price - entry
+
+        # ── Time-aware exits for 15M contracts ──
+        is_15m = "15M" in pos.ticker
+        if is_15m:
+            # Late contract: if profitable and < 3 min left, take it
+            if pos.age_minutes >= 12 and profit_cents > 0:
+                return f"time_exit (profitable at {pos.age_minutes:.0f}min, locking in +{profit_cents}¢)"
+            # Very late: exit regardless if < 1 min left
+            if pos.age_minutes >= 14:
+                return f"time_exit (expiring at {pos.age_minutes:.0f}min, P&L={profit_cents:+d}¢)"
 
         # Take profit
         if price >= pos.tp_target:

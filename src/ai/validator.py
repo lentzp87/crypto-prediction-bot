@@ -43,12 +43,13 @@ class ConsensusResult:
     active_count: int
 
 
-VALIDATION_PROMPT = """You are a disciplined crypto prediction market trader evaluating a volatility-based edge signal.
+VALIDATION_PROMPT = """You are a risk validator for a crypto prediction market trading bot. Your job is to find reasons this edge might be FAKE or untradable.
 
 SIGNAL:
 - Contract: {ticker}
-- Side: {side} | Price: {price}¢ | Edge: {edge:.1f}¢
-- Our HAR volatility model says {probability:.1f}%, market implies {implied:.1f}%
+- Side: {side} | Entry ask: {price}¢ | Raw edge: {edge:.1f}¢
+- Our HAR volatility model says {probability:.1f}%, market mid implies {implied:.1f}%
+- Spread: {spread}¢
 - Current price: ${current_price} vs strike ${strike}
 - Time to expiry: {minutes:.1f} minutes
 
@@ -56,22 +57,22 @@ CONTEXT:
 - RSI: {rsi} | Momentum: {momentum}% | Volatility: {vol}%
 - VWAP: ${vwap} | EMA9/21: ${ema9}/${ema21}
 
-Our model uses a HAR (Heterogeneous Autoregressive) realized volatility model with jump detection. The edge comes from our vol estimate differing from the market's implied vol.
+CHECK THESE RISK FACTORS:
+1. Is the spread too wide? (>5¢ = suspicious)
+2. Is the edge likely to survive after entry slippage + exit slippage (~5¢ total)?
+3. Is time to expiry too short (<4 min) or awkward?
+4. Could this be a stale quote or one-sided book?
+5. Is the underlying moving against this trade direction?
+6. Is volatility near zero (unreliable model)?
+7. Is this edge suspiciously large (>20¢ = something might be wrong)?
 
-DECISION FRAMEWORK:
-- SKIP if edge < 8¢ — too small after spread and slippage
-- SKIP if time to expiry < 3 minutes — not enough time
-- SKIP if volatility is near zero — vol estimate unreliable
-- FOLLOW if edge >= 8¢ AND time >= 5 min AND the setup looks reasonable
-- FOLLOW with higher confidence if edge >= 15¢ — large vol mispricing
-- Consider technicals as CONTEXT (not edge source): if price is trending hard against the trade, lower confidence but don't auto-reject
-
-This is a new model — evaluate each trade on its own merits.
-
-We have a {side} signal. Does this look like a genuine vol mispricing worth trading?
+DECISION:
+- APPROVE only if the edge looks genuine AND tradable after friction
+- REJECT if you find meaningful risk that the edge is fake or untradable
+- When in doubt, REJECT — missing a trade costs nothing, bad fills cost real money
 
 Respond with ONLY valid JSON (no markdown):
-{{"action": "FOLLOW" or "SKIP", "confidence": 0.0-1.0, "side": "{side}", "reasoning": "one sentence", "risk_level": "low" or "medium" or "high"}}"""
+{{"action": "FOLLOW" or "SKIP", "confidence": 0.0-1.0, "side": "{side}", "reasoning": "one sentence explaining your biggest concern or why it looks clean", "risk_level": "low" or "medium" or "high", "fake_edge_risk": "none" or "stale_quote" or "wide_spread" or "low_liquidity" or "model_overconfident" or "time_pressure"}}"""
 
 
 class AIValidator:
@@ -99,6 +100,7 @@ class AIValidator:
             price=int(signal.kalshi_implied * 100),
             implied=signal.kalshi_implied * 100,
             edge=signal.edge_cents,
+            spread=getattr(signal, 'spread', 0),
             rsi=ind.get("rsi", "N/A"),
             momentum=ind.get("momentum", "N/A"),
             vol=ind.get("volatility_15m", "N/A"),

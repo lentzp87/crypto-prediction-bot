@@ -185,22 +185,26 @@ class CryptoPredictionBot:
             f"edge={signal.edge_cents:.1f}¢ | {votes_str}"
         )
 
-        # Auto-approve bypass for large vol mispricings (>12¢ edge)
-        # If our HAR+jump model sees a big edge, the vol mispricing is
-        # too large to ignore — trade it regardless of AI opinion.
+        # High edge = require MORE validation, not less.
+        # ChatGPT audit: "huge apparent edges are often stale quotes or bad data"
         should_trade = consensus.action == "FOLLOW"
-        if (not should_trade
-                and signal.edge_cents >= 12
-                and signal.minutes_to_close >= 5):
-            should_trade = True
+
+        # Tiered edge handling:
+        # 10-16¢: normal AI gate (2/3 majority)
+        # 16¢+: suspicious — require higher AI confidence OR unanimous
+        if (should_trade
+                and signal.edge_cents >= 16
+                and consensus.confidence < 0.65
+                and consensus.follow_count < 3):
+            should_trade = False
             self.trader._log_event(
-                "AUTO", signal.ticker,
-                f"AUTO-FOLLOW: edge={signal.edge_cents:.1f}¢ (>12¢ bypass) "
-                f"AI was {consensus.action} ({consensus.follow_count}/{consensus.active_count})"
+                "SUSPICIOUS", signal.ticker,
+                f"Large edge {signal.edge_cents:.1f}¢ but low confidence "
+                f"({consensus.confidence:.0%}) — requires 3/3 or >65% conf"
             )
             logger.info(
-                f"AUTO-APPROVE {signal.ticker}: {signal.edge_cents:.1f}¢ edge "
-                f"bypasses AI consensus (was {consensus.action})"
+                f"SUSPICIOUS edge {signal.ticker}: {signal.edge_cents:.1f}¢ "
+                f"blocked — confidence too low ({consensus.confidence:.0%})"
             )
 
         # Paper-mode fallback: if ALL models failed (0/0), auto-follow

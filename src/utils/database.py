@@ -79,7 +79,10 @@ class Trade(Base):
     active_count = Column(Integer, nullable=True)    # how many AI models were active
     avg_confidence = Column(Float, nullable=True)     # average confidence of FOLLOW models
     edge_cents = Column(Float, nullable=True)         # edge at time of entry
-    bot_version = Column(String(20), default="1.0.0")
+    spread_cents = Column(Integer, nullable=True)     # bid-ask spread at entry
+    asset = Column(String(10), nullable=True)          # "BTC" or "ETH"
+    contract_type = Column(String(10), nullable=True)  # "15m", "hourly", "daily"
+    bot_version = Column(String(20), default="2.0.0")
     created_at = Column(TIMESTAMP, server_default=func.now())
     closed_at = Column(TIMESTAMP, nullable=True)
 
@@ -116,6 +119,9 @@ class Database:
             ("trades", "active_count", "INTEGER"),
             ("trades", "avg_confidence", "REAL"),
             ("trades", "edge_cents", "REAL"),
+            ("trades", "spread_cents", "INTEGER"),
+            ("trades", "asset", "TEXT"),
+            ("trades", "contract_type", "TEXT"),
         ]
         with self.engine.connect() as conn:
             for table, col, col_type in new_columns:
@@ -179,7 +185,20 @@ class Database:
     def record_trade(self, ticker: str, side: str, entry_price_cents: int,
                      count: int, cost_usd: float, mode: str = "paper",
                      follow_count: int = None, active_count: int = None,
-                     avg_confidence: float = None, edge_cents: float = None) -> int:
+                     avg_confidence: float = None, edge_cents: float = None,
+                     spread_cents: int = None, asset: str = None,
+                     contract_type: str = None) -> int:
+        # Auto-detect asset and contract type from ticker
+        if asset is None:
+            asset = "ETH" if "ETH" in ticker else "BTC"
+        if contract_type is None:
+            if "15M" in ticker:
+                contract_type = "15m"
+            elif "HR" in ticker:
+                contract_type = "hourly"
+            else:
+                contract_type = "daily"
+
         with self._session() as s:
             trade = Trade(
                 ticker=ticker,
@@ -192,6 +211,9 @@ class Database:
                 active_count=active_count,
                 avg_confidence=avg_confidence,
                 edge_cents=edge_cents,
+                spread_cents=spread_cents,
+                asset=asset,
+                contract_type=contract_type,
             )
             s.add(trade)
             s.commit()
@@ -387,6 +409,81 @@ class Database:
             s.query(SkippedSignal).delete()
             s.commit()
         logger.info("Database reset — all history wiped")
+
+    # ── Edge Calibration ─────────────────────────────────────
+
+    def get_edge_calibration(self, mode: Optional[str] = None) -> dict:
+        """
+        Break down win rate by edge bucket to see if 10¢ edge
+        actually wins like 10¢ edge (calibration check).
+        """
+        with self._session() as s:
+            q = s.query(Trade).filter(
+                Trade.status == "closed",
+                Trade.edge_cents.isnot(None),
+            )
+            if mode:
+                q = q.filter_by(mode=mode)
+            trades = q.all()
+
+            buckets = [
+                ("6-8", 6, 8),
+                ("8-10", 8, 10),
+                ("10-12", 10, 12),
+                ("12-15", 12, 15),
+                ("15-20", 15, 20),
+                ("20+", 20, 999),
+            ]
+
+            stats = {}
+            for name, lo, hi in buckets:
+                group = [t for t in trades if lo <= (t.edge_cents or 0) < hi]
+                if not group:
+                    stats[name] = {"trades": 0, "wins": 0, "win_rate": 0,
+                                   "total_pnl": 0, "avg_pnl": 0, "avg_edge": 0}
+                    continue
+                wins = [t for t in group if (t.pnl_usd or 0) > 0]
+                total_pnl = sum(t.pnl_usd or 0 for t in group)
+                avg_edge = sum(t.edge_cents or 0 for t in group) / len(group)
+                stats[name] = {
+                    "trades": len(group),
+                    "wins": len(wins),
+                    "win_rate": round(len(wins) / len(group) * 100, 1),
+                    "total_pnl": round(total_pnl, 2),
+                    "avg_pnl": round(total_pnl / len(group), 2),
+                    "avg_edge": round(avg_edge, 1),
+                }
+            return stats
+
+    # ── Asset Breakdown ───────────────────────────────────────
+
+    def get_asset_stats(self, mode: Optional[str] = None) -> dict:
+        """Break down win rate and P&L by asset (BTC vs ETH)."""
+        with self._session() as s:
+            q = s.query(Trade).filter_by(status="closed")
+            if mode:
+                q = q.filter_by(mode=mode)
+            trades = q.all()
+
+            stats = {}
+            for asset_name in ["BTC", "ETH"]:
+                group = [t for t in trades
+                         if (t.asset == asset_name) or
+                         (t.asset is None and asset_name in (t.ticker or ""))]
+                if not group:
+                    stats[asset_name] = {"trades": 0, "wins": 0, "win_rate": 0,
+                                         "total_pnl": 0, "avg_pnl": 0}
+                    continue
+                wins = [t for t in group if (t.pnl_usd or 0) > 0]
+                total_pnl = sum(t.pnl_usd or 0 for t in group)
+                stats[asset_name] = {
+                    "trades": len(group),
+                    "wins": len(wins),
+                    "win_rate": round(len(wins) / len(group) * 100, 1),
+                    "total_pnl": round(total_pnl, 2),
+                    "avg_pnl": round(total_pnl / len(group), 2),
+                }
+            return stats
 
     # ── P&L History (for charting) ─────────────────────────────
 
