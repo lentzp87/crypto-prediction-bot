@@ -101,6 +101,15 @@ class SkippedSignal(Base):
     checked_at = Column(TIMESTAMP, nullable=True)
 
 
+class BotState(Base):
+    """Persistent key-value store for bot state that must survive restarts."""
+    __tablename__ = "bot_state"
+
+    key = Column(String(50), primary_key=True)
+    value = Column(Text)
+    updated_at = Column(TIMESTAMP, server_default=func.now())
+
+
 class Database:
     """Synchronous SQLite database manager (runs in thread pool for async)."""
 
@@ -484,6 +493,25 @@ class Database:
                     "avg_pnl": round(total_pnl / len(group), 2),
                 }
             return stats
+
+    # ── Persistent Bot State ────────────────────────────────────
+
+    def get_state(self, key: str, default: str = "") -> str:
+        """Get a persistent bot state value."""
+        with self._session() as s:
+            row = s.query(BotState).filter_by(key=key).first()
+            return row.value if row else default
+
+    def set_state(self, key: str, value: str):
+        """Set a persistent bot state value."""
+        with self._session() as s:
+            row = s.query(BotState).filter_by(key=key).first()
+            if row:
+                row.value = value
+                row.updated_at = datetime.utcnow()
+            else:
+                s.add(BotState(key=key, value=value))
+            s.commit()
 
     # ── P&L History (for charting) ─────────────────────────────
 

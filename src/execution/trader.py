@@ -119,6 +119,10 @@ class Trader:
         self.kalshi_portfolio: float = 0.0
         self._balance_updated_at: float = 0
 
+        # Daily equity tracking — reset each UTC day
+        self._daily_start_balance: float = 0.0
+        self._daily_start_date: str = ""
+
         # Cooldown tracking: ticker_series → timestamp of last close
         self._cooldowns: dict[str, float] = {}
 
@@ -239,11 +243,24 @@ class Trader:
             else:
                 logger.info("No existing Kalshi positions to sync")
 
-            # Reset circuit breaker on startup — stale losses from
-            # previous run shouldn't block fresh trading
-            self.consecutive_losses = 0
-            self.circuit_breaker_until = 0
-            logger.info("Circuit breaker reset on startup")
+            # Restore circuit breaker state from DB (persists across restarts)
+            try:
+                cb_until = float(self.db.get_state("circuit_breaker_until", "0"))
+                cb_losses = int(self.db.get_state("consecutive_losses", "0"))
+                if cb_until > time.time():
+                    self.circuit_breaker_until = cb_until
+                    remaining = (cb_until - time.time()) / 60
+                    logger.info(f"Circuit breaker restored: {remaining:.0f} min remaining")
+                    self._log_event("SYSTEM", "KALSHI",
+                        f"Circuit breaker restored from DB ({remaining:.0f} min remaining)")
+                else:
+                    self.circuit_breaker_until = 0
+                self.consecutive_losses = cb_losses
+                logger.info(f"Restored circuit breaker state: {cb_losses} consecutive losses")
+            except Exception as e:
+                logger.warning(f"Could not restore circuit breaker state: {e}")
+                self.consecutive_losses = 0
+                self.circuit_breaker_until = 0
 
         except Exception as e:
             logger.error(f"Failed to sync Kalshi positions: {e}")
@@ -267,6 +284,15 @@ class Trader:
             self.kalshi_cash = data.get("balance", 0) / 100.0
             self.kalshi_portfolio = data.get("portfolio_value", 0) / 100.0
             self._balance_updated_at = time.time()
+
+            # Track daily starting equity — snapshot the first balance fetch each UTC day
+            from datetime import datetime
+            today_str = datetime.utcnow().strftime("%Y-%m-%d")
+            if self._daily_start_date != today_str:
+                total = self.kalshi_cash + self.kalshi_portfolio
+                self._daily_start_balance = total
+                self._daily_start_date = today_str
+                logger.info(f"Daily starting equity set: ${total:.2f} for {today_str}")
         except Exception as e:
             logger.warning(f"Failed to fetch Kalshi balance: {e}")
 
@@ -320,15 +346,14 @@ class Trader:
             if p.ticker == signal.ticker and p.side == signal.side:
                 return f"Already holding {signal.ticker} {signal.side}"
 
-        # Daily loss limit — use real Kalshi balance if available,
-        # because DB P&L can be poisoned by phantom losses from bugs
+        # Daily loss limit — use real Kalshi balance vs TODAY'S starting equity,
+        # not the original deposit. Otherwise multi-day drawdowns compound unfairly.
         today = self.db.get_today_stats(mode=self.mode)
-        if self.mode == "live" and self.kalshi_cash > 0:
-            # Real P&L from actual Kalshi balance vs starting bankroll
+        if self.mode == "live" and self.kalshi_cash > 0 and self._daily_start_balance > 0:
             real_total = self.kalshi_cash + self.kalshi_portfolio
-            real_pnl = real_total - self.settings.wallet_size_usd
-            if real_pnl <= -self.settings.max_daily_loss_usd:
-                return f"Daily loss limit reached (real P&L: ${real_pnl:.2f})"
+            daily_pnl = real_total - self._daily_start_balance
+            if daily_pnl <= -self.settings.max_daily_loss_usd:
+                return f"Daily loss limit reached (today: ${daily_pnl:.2f} vs start ${self._daily_start_balance:.2f})"
         else:
             if today["today_pnl"] <= -self.settings.max_daily_loss_usd:
                 return f"Daily loss limit reached (${today['today_pnl']:.2f})"
@@ -424,9 +449,8 @@ class Trader:
     # ── Paper Trading (realistic simulation) ─────────────────
 
     # Simulate real-world friction so paper results ≈ live results
-    PAPER_ENTRY_SLIPPAGE = 3   # ¢ worse on entry (crossing the spread)
+    PAPER_ENTRY_SLIPPAGE = 1   # ¢ worse on entry (signal already uses ask price)
     PAPER_EXIT_SLIPPAGE = 2    # ¢ worse on exit (hitting the bid)
-    # These match the live trade spread buffers exactly
 
     async def _paper_trade(self, signal, cost_usd: float, count: int, consensus=None) -> int:
         """Record a paper trade — signal already uses executable ask price."""
@@ -573,7 +597,7 @@ class Trader:
                     "LIVE_TRADE",
                     signal.ticker,
                     f"LIVE {signal.side.upper()} @ {entry_cents}¢ × {actual_count} "
-                    f"(${actual_cost:.2f}) bid={bid_cents}¢ edge={signal.edge_cents:.1f}¢"
+                    f"(${actual_cost:.2f}) edge={signal.edge_cents:.1f}¢"
                 )
                 logger.info(
                     f"LIVE order filled: {signal.side} {signal.ticker} "
@@ -853,6 +877,7 @@ class Trader:
             return
 
         exit_price = pos.current_price_cents
+        original_count = pos.count  # snapshot before _live_close can mutate it
 
         # For live positions, place a sell order on Kalshi
         # Skip selling if price is near settlement (99¢/1¢) — let Kalshi auto-settle
@@ -876,6 +901,35 @@ class Trader:
                     self._log_event("WARN", pos.ticker,
                         f"Close failed attempt {pos.close_attempts}/3 ({reason}), will retry")
                     return
+
+            # Handle partial fills: _live_close may have reduced pos.count
+            if pos.count < original_count and pos.count > 0:
+                # Partial fill — record P&L for filled contracts only,
+                # keep the position open for remaining contracts
+                filled_count = original_count - pos.count
+                pnl_partial = (exit_price - pos.entry_price_cents) / 100.0 * filled_count
+
+                # Record the partial close as a separate trade close
+                # but DON'T close the original — it's still alive with fewer contracts
+                self._log_event("PARTIAL_CLOSE", pos.ticker,
+                    f"Closed {filled_count}/{original_count} @ {exit_price}¢ P&L=${pnl_partial:+.2f}, "
+                    f"{pos.count} remaining")
+
+                # Update consecutive losses / circuit breaker for the partial
+                if pnl_partial < 0 and not pos.synced:
+                    self.consecutive_losses += 1
+                    if self.consecutive_losses >= self.settings.circuit_breaker_losses and not self.is_paused:
+                        pause_sec = self.settings.circuit_breaker_pause_min * 60
+                        self.circuit_breaker_until = time.time() + pause_sec
+                        self._log_event("CIRCUIT_BREAKER", pos.ticker,
+                            f"{self.consecutive_losses} consecutive losses — pausing")
+                        self.consecutive_losses = 0
+                elif pnl_partial >= 0:
+                    self.consecutive_losses = 0
+
+                # Position is already back in self.positions (put there by _live_close)
+                return
+
         elif pos.mode == "live" and near_settlement:
             self._log_event("EXIT", pos.ticker, f"Near settlement ({exit_price}¢) — letting Kalshi auto-settle")
 
@@ -885,7 +939,7 @@ class Trader:
             exit_price = max(1, exit_price - self.PAPER_EXIT_SLIPPAGE)
 
         pnl_per_contract = (exit_price - pos.entry_price_cents) / 100.0
-        pnl = pnl_per_contract * pos.count
+        pnl = pnl_per_contract * original_count
 
         # Record cooldown so we don't immediately re-enter this contract
         series_key = pos.ticker[:25]
@@ -920,8 +974,11 @@ class Trader:
                 logger.warning(f"Circuit breaker triggered: {self.consecutive_losses} losses")
                 # Reset counter so it takes another N losses to re-trigger after pause ends
                 self.consecutive_losses = 0
+            # Persist circuit breaker state to DB (survives restarts)
+            self._persist_circuit_breaker()
         elif pnl >= 0:
             self.consecutive_losses = 0
+            self._persist_circuit_breaker()
 
         self._log_event(
             "EXIT",
@@ -934,6 +991,14 @@ class Trader:
             f"Closed {pos.ticker}: {reason} | "
             f"{pos.entry_price_cents}¢→{exit_price}¢ P&L=${pnl:+.2f}"
         )
+
+    def _persist_circuit_breaker(self):
+        """Save circuit breaker state to DB so it survives restarts."""
+        try:
+            self.db.set_state("circuit_breaker_until", str(self.circuit_breaker_until))
+            self.db.set_state("consecutive_losses", str(self.consecutive_losses))
+        except Exception as e:
+            logger.warning(f"Failed to persist circuit breaker state: {e}")
 
     async def stop(self):
         self._running = False
