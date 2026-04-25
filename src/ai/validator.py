@@ -43,7 +43,7 @@ class ConsensusResult:
     active_count: int
 
 
-VALIDATION_PROMPT = """You are a risk validator for a crypto prediction market trading bot. Your job is to find reasons this edge might be FAKE or untradable.
+VALIDATION_PROMPT = """You are a trade quality assessor for a crypto prediction market bot on Kalshi. Your goal is BALANCED evaluation — approve good trades, reject bad ones.
 
 SIGNAL:
 - Contract: {ticker}
@@ -55,24 +55,23 @@ SIGNAL:
 
 CONTEXT:
 - RSI: {rsi} | Momentum: {momentum}% | Volatility: {vol}%
-- VWAP: ${vwap} | EMA9/21: ${ema9}/${ema21}
+- VWAP: ${vwap} | EMA9/21: ${ema21}/${ema21}
 
-CHECK THESE RISK FACTORS:
-1. Is the spread too wide? (>5¢ = suspicious)
-2. Is the edge likely to survive after entry slippage + exit slippage (~5¢ total)?
-3. Is time to expiry too short (<4 min) or awkward?
-4. Could this be a stale quote or one-sided book?
-5. Is the underlying moving against this trade direction?
-6. Is volatility near zero (unreliable model)?
-7. Is this edge suspiciously large (>20¢ = something might be wrong)?
+EVALUATE:
+1. Edge after friction: entry slippage ~1¢, exit slippage ~2¢. Does the edge survive? (edges 8¢+ usually do)
+2. Spread: under 8¢ is fine. Only flag if truly illiquid.
+3. Time: 4+ minutes to expiry is tradable.
+4. Direction: does momentum/RSI support or contradict this side?
 
-DECISION:
-- APPROVE only if the edge looks genuine AND tradable after friction
-- REJECT if you find meaningful risk that the edge is fake or untradable
-- When in doubt, REJECT — missing a trade costs nothing, bad fills cost real money
+DECISION RULES:
+- FOLLOW if edge >= 8¢ AND survives friction AND no major red flag
+- FOLLOW if edge >= 15¢ — large edges are usually real on Kalshi crypto
+- SKIP only if there is a SPECIFIC, CONCRETE problem (not vague uncertainty)
+- Default to FOLLOW when the math works. We want to TRADE, not sit on the sidelines.
+- A 10¢ edge that survives 3¢ friction is still a 7¢ edge — that's a good trade.
 
 Respond with ONLY valid JSON (no markdown):
-{{"action": "FOLLOW" or "SKIP", "confidence": 0.0-1.0, "side": "{side}", "reasoning": "one sentence explaining your biggest concern or why it looks clean", "risk_level": "low" or "medium" or "high", "fake_edge_risk": "none" or "stale_quote" or "wide_spread" or "low_liquidity" or "model_overconfident" or "time_pressure"}}"""
+{{"action": "FOLLOW" or "SKIP", "confidence": 0.0-1.0, "side": "{side}", "reasoning": "one sentence", "risk_level": "low" or "medium" or "high", "fake_edge_risk": "none" or "stale_quote" or "wide_spread" or "low_liquidity" or "model_overconfident" or "time_pressure"}}"""
 
 
 class AIValidator:

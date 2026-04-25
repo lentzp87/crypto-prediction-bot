@@ -152,77 +152,90 @@ class CryptoPredictionBot:
     async def _on_signal(self, signal):
         """
         Called by scanner when an edge is detected.
-        Runs AI validation → executes trade if consensus says FOLLOW.
+        Tiered gate:
+          - 15¢+ edge → AUTO-TRADE (skip AI, the math is strong enough)
+          - 8-15¢ edge → AI validation, 1/3 FOLLOW is enough
+          - <8¢ edge → shouldn't get here (scanner filters), but require 2/3
         """
         logger.info(
             f"Signal: {signal.side.upper()} {signal.ticker} "
             f"edge={signal.edge_cents:.1f}¢ prob={signal.our_probability:.1%}"
         )
 
-        # AI consensus validation
-        consensus = await self.ai_validator.validate(signal)
-
-        # Record AI decision
-        models = {m.model: {"action": m.action, "confidence": m.confidence, "reasoning": m.reasoning}
-                  for m in consensus.models}
-
-        self.db.record_ai_decision(
-            signal_id=0,
-            ticker=signal.ticker,
-            gpt=models.get("gpt-4o-mini", {}),
-            claude=models.get("claude-haiku-4.5", {}),
-            gemini=models.get("gemini-2.0-flash", {}),
-            consensus_action=consensus.action,
-            consensus_side=consensus.side,
-        )
-
-        # Log AI consensus details to event log (visible on dashboard)
-        model_votes = []
-        for m in consensus.models:
-            vote = f"{m.model}={m.action}"
-            if m.confidence:
-                vote += f"({m.confidence:.0%})"
-            model_votes.append(vote)
-        votes_str = ", ".join(model_votes)
-
-        self.trader._log_event(
-            "AI", signal.ticker,
-            f"{consensus.action} ({consensus.follow_count}/{consensus.active_count}) "
-            f"edge={signal.edge_cents:.1f}¢ | {votes_str}"
-        )
-
-        # High edge = require MORE validation, not less.
-        # ChatGPT audit: "huge apparent edges are often stale quotes or bad data"
-        should_trade = consensus.action == "FOLLOW"
-
-        # Tiered edge handling:
-        # 10-16¢: normal AI gate (2/3 majority)
-        # 16¢+: suspicious — require higher AI confidence OR unanimous
-        if (should_trade
-                and signal.edge_cents >= 16
-                and consensus.confidence < 0.65
-                and consensus.follow_count < 3):
-            should_trade = False
+        # ── HIGH EDGE BYPASS: 15¢+ edge skips AI entirely ──
+        if signal.edge_cents >= 15:
             self.trader._log_event(
-                "SUSPICIOUS", signal.ticker,
-                f"Large edge {signal.edge_cents:.1f}¢ but low confidence "
-                f"({consensus.confidence:.0%}) — requires 3/3 or >65% conf"
+                "AUTO_TRADE", signal.ticker,
+                f"High edge {signal.edge_cents:.1f}¢ — bypassing AI gate"
             )
-            logger.info(
-                f"SUSPICIOUS edge {signal.ticker}: {signal.edge_cents:.1f}¢ "
-                f"blocked — confidence too low ({consensus.confidence:.0%})"
+            logger.info(f"AUTO_TRADE: {signal.ticker} edge={signal.edge_cents:.1f}¢ — skipping AI")
+
+            # Create a dummy consensus for the trade
+            from src.ai.validator import ConsensusResult, ModelResponse
+            consensus = ConsensusResult(
+                action="FOLLOW",
+                side=signal.side,
+                confidence=0.8,
+                models=[],
+                follow_count=3,
+                skip_count=0,
+                active_count=3,
+            )
+            should_trade = True
+        else:
+            # ── NORMAL AI GATE ──
+            consensus = await self.ai_validator.validate(signal)
+
+            # Record AI decision
+            models = {m.model: {"action": m.action, "confidence": m.confidence, "reasoning": m.reasoning}
+                      for m in consensus.models}
+
+            self.db.record_ai_decision(
+                signal_id=0,
+                ticker=signal.ticker,
+                gpt=models.get("gpt-4.1-nano", models.get("gpt-4o-mini", {})),
+                claude=models.get("claude-haiku-4.5", {}),
+                gemini=models.get("gemini-2.5-flash-lite", models.get("gemini-2.0-flash", {})),
+                consensus_action=consensus.action,
+                consensus_side=consensus.side,
             )
 
-        # Paper-mode fallback: if ALL models failed (0/0), auto-follow
-        if (not should_trade
-                and consensus.active_count == 0
-                and self.trader.mode == "paper"
-                and signal.edge_cents >= 8):
-            should_trade = True
+            # Log AI consensus details to event log (visible on dashboard)
+            model_votes = []
+            for m in consensus.models:
+                vote = f"{m.model}={m.action}"
+                if m.confidence:
+                    vote += f"({m.confidence:.0%})"
+                model_votes.append(vote)
+            votes_str = ", ".join(model_votes)
+
             self.trader._log_event(
                 "AI", signal.ticker,
-                f"AUTO-FOLLOW (paper mode, all AI down, edge={signal.edge_cents:.1f}¢)"
+                f"{consensus.action} ({consensus.follow_count}/{consensus.active_count}) "
+                f"edge={signal.edge_cents:.1f}¢ | {votes_str}"
             )
+
+            should_trade = consensus.action == "FOLLOW"
+
+            # AGGRESSIVE: even 1/3 FOLLOW is enough for 10¢+ edges
+            if (not should_trade
+                    and consensus.follow_count >= 1
+                    and signal.edge_cents >= 10):
+                should_trade = True
+                self.trader._log_event(
+                    "OVERRIDE", signal.ticker,
+                    f"1/{consensus.active_count} FOLLOW + strong edge {signal.edge_cents:.1f}¢ — taking it"
+                )
+
+            # Fallback: if ALL models failed (0/0), auto-follow for decent edges
+            if (not should_trade
+                    and consensus.active_count == 0
+                    and signal.edge_cents >= 8):
+                should_trade = True
+                self.trader._log_event(
+                    "AI", signal.ticker,
+                    f"AUTO-FOLLOW (all AI down, edge={signal.edge_cents:.1f}¢)"
+                )
 
         if should_trade:
             trade_id = await self.trader.execute_trade(signal, consensus)
