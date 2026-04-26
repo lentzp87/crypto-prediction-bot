@@ -398,7 +398,7 @@ class Trader:
 
     # ── Max contracts: Kalshi orderbooks are thin, limit to avoid
     # eating through the book and getting terrible fills ──
-    MAX_CONTRACTS = 5   # aggressive — still chunked 1 at a time for thin books
+    MAX_CONTRACTS = 10   # full send — chunked 1 at a time for thin books
 
     def _calculate_size(self, signal, consensus) -> tuple[float, int]:
         """Kelly-lite position sizing with max-loss cap + contract cap."""
@@ -448,8 +448,8 @@ class Trader:
         cost_per_contract = entry_price / 100.0
         count = max(1, int(trade_size / cost_per_contract))
 
-        # ── Max loss cap: never risk more than $15 on a single position ──
-        max_loss_usd = 15.0
+        # ── Max loss cap: never risk more than $30 on a single position ──
+        max_loss_usd = 30.0
         max_contracts_by_loss = max(1, int(max_loss_usd / cost_per_contract))
         count = min(count, max_contracts_by_loss)
 
@@ -840,10 +840,21 @@ class Trader:
         actual_remaining = pos.minutes_to_close - pos.age_minutes
         is_15m = "15M" in pos.ticker
 
-        if is_15m and actual_remaining <= 3 and profit_cents > 0:
-            return f"time_exit (profitable, {actual_remaining:.0f}min left, locking in +{profit_cents}¢)"
-        if is_15m and actual_remaining <= 1:
-            return f"time_exit ({actual_remaining:.0f}min left, P&L={profit_cents:+d}¢)"
+        # For LIVE 15M contracts: LET THEM SETTLE. The edge is in the binary
+        # outcome (0¢ or 100¢). Exiting early at the model price = $0 P&L every time.
+        # Only exit early if we have a big profit to lock in (20¢+).
+        if is_15m and pos.mode == "live":
+            if actual_remaining <= 3 and profit_cents >= 20:
+                return f"time_exit (big profit, {actual_remaining:.0f}min left, locking in +{profit_cents}¢)"
+            # Otherwise let Kalshi auto-settle — don't exit early
+            # The position will resolve at 0 or 100 at expiry
+            pass
+        elif is_15m:
+            # Paper mode: still use time exits
+            if actual_remaining <= 3 and profit_cents > 0:
+                return f"time_exit (profitable, {actual_remaining:.0f}min left, locking in +{profit_cents}¢)"
+            if actual_remaining <= 1:
+                return f"time_exit ({actual_remaining:.0f}min left, P&L={profit_cents:+d}¢)"
 
         # Take profit
         if price >= pos.tp_target:

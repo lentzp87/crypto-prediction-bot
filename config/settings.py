@@ -28,34 +28,34 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     google_api_key: Optional[str] = None
 
-    # ── Risk Management ($525 bankroll) — AGGRESSIVE ─────────────
-    wallet_size_usd: float = 525.0
-    max_daily_loss_usd: float = 100.0       # aggressive: $100/day (was $50)
-    max_positions: int = 8                  # more at-bats (was 5)
-    max_trades_per_day: int = 60            # more volume (was 40)
-    min_edge_cents: float = 8.0             # lowered for more trades (was 10)
-    max_single_trade_usd: float = 20.0      # ~4% of wallet (was $10)
-    circuit_breaker_losses: int = 5         # more tolerant (was 4)
-    circuit_breaker_pause_min: int = 10     # shorter pause (was 15)
+    # ── Risk Management ($535 bankroll) — FULL AGGRESSION ─────────
+    wallet_size_usd: float = 535.0
+    max_daily_loss_usd: float = 150.0       # full send: $150/day
+    max_positions: int = 15                 # many at-bats (was 8)
+    max_trades_per_day: int = 200           # uncapped practically (was 60)
+    min_edge_cents: float = 8.0             # keep at 8¢
+    max_single_trade_usd: float = 30.0      # ~6% of wallet
+    circuit_breaker_losses: int = 6         # more tolerant
+    circuit_breaker_pause_min: int = 5      # short pause
 
     # ── Position Limits ────────────────────────────────────────
-    max_same_strike: int = 3                # allow more stacking (was 2)
-    max_same_window: int = 3                # allow more in same window (was 2)
-    cooldown_seconds: int = 180             # 3 min cooldown (was 5 min)
+    max_same_strike: int = 3
+    max_same_window: int = 4                # allow more in same window
+    cooldown_seconds: int = 120             # 2 min cooldown
 
-    # ── Sizing (Kelly-lite, scaled for $525) ───────────────────
-    base_trade_size_usd: float = 8.0        # bigger base (was $5)
-    max_trade_size_usd: float = 20.0        # higher cap (was $10)
+    # ── Sizing (Kelly-lite, scaled for $535) ───────────────────
+    base_trade_size_usd: float = 12.0       # bigger base (was $8)
+    max_trade_size_usd: float = 30.0        # higher cap (was $20)
 
     # ── Asset-Specific Configs ─────────────────────────────────
-    btc_min_edge_cents: float = 8.0         # lowered (was 10)
-    btc_max_spread_cents: float = 7.0       # slightly wider tolerance (was 6)
+    btc_min_edge_cents: float = 8.0
+    btc_max_spread_cents: float = 8.0       # wider tolerance
     btc_jump_multiplier_cap: float = 2.0
 
-    eth_min_edge_cents: float = 10.0        # lowered (was 12)
-    eth_max_spread_cents: float = 6.0       # slightly wider (was 5)
+    eth_min_edge_cents: float = 8.0         # same as BTC now
+    eth_max_spread_cents: float = 7.0       # wider
     eth_jump_multiplier_cap: float = 2.5
-    max_contracts_per_trade: int = 5         # more contracts (was 3)
+    max_contracts_per_trade: int = 10        # 2x more contracts (was 5)
 
     # ── Take Profit / Stop Loss (cents) ────────────────────────
     # Tiered by entry price bucket

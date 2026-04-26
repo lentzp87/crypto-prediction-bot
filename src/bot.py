@@ -262,8 +262,16 @@ class CryptoPredictionBot:
     async def _get_market_price(self, ticker: str) -> Optional[int]:
         """
         Get current market price for a contract.
-        In paper mode, simulate price movement based on price vs strike.
+        For LIVE mode: fetch real orderbook price from Kalshi API.
+        Fallback: use model estimate with actual remaining time.
         """
+        # Try live Kalshi price first (for live mode)
+        if self.trader.mode == "live":
+            live_price = await self._fetch_kalshi_price(ticker)
+            if live_price is not None:
+                return live_price
+
+        # Fallback: model-based estimate
         try:
             strike = float(ticker.split("-T")[-1])
         except (ValueError, IndexError):
@@ -279,9 +287,46 @@ class CryptoPredictionBot:
         if price == 0:
             return None
 
-        est = engine.estimate_probability(strike, minutes_to_close=5)
+        # Use actual remaining time from the position, not a fixed 5 min
+        # Parse close time from ticker to get real remaining minutes
+        from src.scanner.kalshi_scanner import parse_ticker
+        parsed = parse_ticker(ticker)
+        if parsed:
+            from datetime import datetime, timezone
+            _, close_time = parsed
+            remaining_min = max(0.5, (close_time - datetime.now(timezone.utc)).total_seconds() / 60.0)
+        else:
+            remaining_min = 5.0
+
+        est = engine.estimate_probability(strike, minutes_to_close=remaining_min)
         simulated_price = int(est.probability * 100)
         return max(1, min(99, simulated_price))
+
+    async def _fetch_kalshi_price(self, ticker: str) -> Optional[int]:
+        """Fetch real market price from Kalshi orderbook."""
+        try:
+            client = self.trader._client
+            if not client:
+                return None
+            path = f"/trade-api/v2/markets/{ticker}"
+            headers = self.trader._sign_request("GET", path)
+            resp = await client.get(
+                f"{self.settings.kalshi_base_url}{path}",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("market", {})
+            # Use yes_bid as the current tradeable price
+            yes_bid = data.get("yes_bid_dollars", "")
+            yes_ask = data.get("yes_ask_dollars", "")
+            if yes_bid and yes_ask:
+                bid = int(float(yes_bid) * 100)
+                ask = int(float(yes_ask) * 100)
+                mid = (bid + ask) // 2
+                return max(1, min(99, mid))
+            return None
+        except Exception:
+            return None  # silent fallback to model price
 
     # ── Background Tasks ───────────────────────────────────────
 
