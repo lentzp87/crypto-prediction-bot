@@ -263,9 +263,11 @@ class KalshiScanner:
         logger.info(f"Scan: {', '.join(series_counts)} → {len(all_contracts)} total contracts")
 
         signals = []
+        filter_stats = {"engine_not_ready": 0, "extreme_prob": 0, "price_range": 0,
+                        "spread": 0, "volume": 0, "below_edge": 0, "passed": 0}
         for contract in all_contracts:
             engine = getattr(contract, '_engine', self.btc_engine)
-            signal = self._evaluate_contract(contract, engine)
+            signal = self._evaluate_contract(contract, engine, filter_stats)
             if signal:
                 signals.append(signal)
 
@@ -280,7 +282,16 @@ class KalshiScanner:
             self.signals_today += len(top_signals)
             signals = top_signals
         else:
-            logger.debug(f"No signals from {len(all_contracts)} contracts (all filtered)")
+            logger.info(
+                f"No signals from {len(all_contracts)} contracts | "
+                f"Filters: engine={filter_stats['engine_not_ready']}, "
+                f"extreme={filter_stats['extreme_prob']}, "
+                f"price={filter_stats['price_range']}, "
+                f"spread={filter_stats['spread']}, "
+                f"vol={filter_stats['volume']}, "
+                f"edge={filter_stats['below_edge']}, "
+                f"passed={filter_stats['passed']}"
+            )
 
         return signals
 
@@ -390,10 +401,12 @@ class KalshiScanner:
             logger.error(f"Failed to fetch Kalshi contracts: {e}")
             return []
 
-    def _evaluate_contract(self, contract: KalshiContract, engine=None) -> Optional[TradeSignal]:
+    def _evaluate_contract(self, contract: KalshiContract, engine=None, filter_stats=None) -> Optional[TradeSignal]:
         """Evaluate a single contract for trading edge."""
         if engine is None:
             engine = self.btc_engine
+        if filter_stats is None:
+            filter_stats = {}
 
         # Skip bad hours (learned from historical data)
         if self.bad_hours:
@@ -410,33 +423,36 @@ class KalshiScanner:
         # Skip if engine not ready (volatility not computed yet)
         # Returns -1.0 sentinel — old default of 0.5 caused phantom edges
         if est.probability < 0:
-            logger.debug(f"Skip {contract.ticker}: engine not ready (no volatility data)")
+            filter_stats["engine_not_ready"] = filter_stats.get("engine_not_ready", 0) + 1
             return None
 
         # Skip extreme probabilities — these are deep OTM contracts where
         # both us and Kalshi agree it's very unlikely. Any "edge" is noise.
         if est.probability > 0.90 or est.probability < 0.10:
-            logger.debug(
-                f"Skip {contract.ticker}: extreme prob {est.probability:.1%} "
-                f"(strike={contract.strike_price:.0f}, {contract.minutes_to_close:.0f}min)"
-            )
+            filter_stats["extreme_prob"] = filter_stats.get("extreme_prob", 0) + 1
             return None
 
         # WIDENED: trade contracts in the 20-80¢ range (was 35-65¢)
         # More aggressive — captures more edge opportunities
         mid_price = (contract.yes_bid + contract.yes_ask) // 2
         if mid_price < 20 or mid_price > 80:
-            logger.debug(f"Skip {contract.ticker}: price {mid_price}¢ outside 20-80¢ range")
+            filter_stats["price_range"] = filter_stats.get("price_range", 0) + 1
             return None
 
-        # Spread filter — skip illiquid contracts (widened from 6 to 8)
-        if contract.spread > 8:
-            logger.debug(f"Skip {contract.ticker}: spread too wide ({contract.spread}¢)")
+        # Spread filter — adaptive by contract type
+        # 15M contracts: tight spread (10¢) since they're short-lived
+        # Daily contracts: very permissive (30¢) — spreads widen drastically off-hours/weekends
+        #   (we place limit orders anyway, so wide spread mostly means thin book, not bad entry)
+        is_daily = contract.minutes_to_close > 60
+        max_spread = 30 if is_daily else 10
+        if contract.spread > max_spread:
+            filter_stats["spread"] = filter_stats.get("spread", 0) + 1
             return None
 
-        # Volume filter — skip dead contracts
-        if contract.volume < 1 and contract.minutes_to_close > 30:
-            logger.debug(f"Skip {contract.ticker}: no volume")
+        # Volume filter — ONLY skip truly dead 15M contracts with 0 volume
+        # Daily contracts often have 0 volume off-hours but are still tradeable via limit orders
+        if contract.volume < 1 and contract.minutes_to_close <= 30 and contract.minutes_to_close > 5:
+            filter_stats["volume"] = filter_stats.get("volume", 0) + 1
             return None
 
         # EXECUTABLE EDGE: use ask price (what we'd actually pay), not bid/mid
@@ -522,6 +538,7 @@ class KalshiScanner:
             )
 
         if signal:
+            filter_stats["passed"] = filter_stats.get("passed", 0) + 1
             # Record to database
             self.db.record_signal(
                 ticker=signal.ticker,
@@ -532,6 +549,8 @@ class KalshiScanner:
                 edge_cents=signal.edge_cents,
                 indicators=signal.indicators,
             )
+        else:
+            filter_stats["below_edge"] = filter_stats.get("below_edge", 0) + 1
 
         return signal
 
