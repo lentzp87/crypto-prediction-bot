@@ -186,11 +186,13 @@ class AIValidator:
 
     def _calculate_consensus(self, models: list[ModelResponse], default_side: str) -> ConsensusResult:
         """
-        Simple 2/3 majority vote. Weighted voting can only UPGRADE (SKIP → FOLLOW),
-        never DOWNGRADE a clear majority.
+        WEIGHTED consensus that respects proven model accuracy.
 
-        RULE: If 2 of 3 models say FOLLOW, consensus is FOLLOW. Period.
-        Weighted voting is ONLY used when the simple vote is tied (1/2 or 1/3).
+        With learning data: use weighted voting (proven models get more say).
+        Without learning data: simple 2/3 majority.
+
+        Key insight from live data: Claude Haiku is 81.5% accurate while
+        GPT and Gemini are <23%. Weighted voting correctly defers to Claude.
         """
         active = [m for m in models if m.action in ("FOLLOW", "SKIP")]
         follow = [m for m in active if m.action == "FOLLOW"]
@@ -199,37 +201,46 @@ class AIValidator:
         action = "SKIP"
         n = len(active)
 
-        # HARD RULE: 2/3 or 3/3 FOLLOW = FOLLOW, no exceptions
-        if n >= 2 and len(follow) >= 2:
-            action = "FOLLOW"
-            logger.info(f"Consensus: {len(follow)}/{n} FOLLOW → FOLLOW (majority)")
-        elif n >= 2 and len(follow) == 1:
-            # 1/3 or 1/2 — check weighted voting for possible upgrade
-            has_learning = any(
-                self.model_accuracy.get(k, {}).get("trades", 0) >= 20
-                for k in ["gpt", "claude", "gemini"]
-            )
-            if has_learning:
-                follow_weight = 0.0
-                skip_weight = 0.0
-                for m in active:
-                    weight_key = self.MODEL_WEIGHT_KEYS.get(m.model, "")
-                    weight = self.model_weights.get(weight_key, 0.333)
-                    if m.action == "FOLLOW":
-                        follow_weight += weight * max(0.5, m.confidence)
-                    else:
-                        skip_weight += weight * max(0.5, m.confidence)
-                total_weight = follow_weight + skip_weight
-                if total_weight > 0 and (follow_weight / total_weight) >= 0.55:
-                    action = "FOLLOW"
-                    logger.info(
-                        f"Weighted upgrade: FOLLOW={follow_weight:.3f} SKIP={skip_weight:.3f} "
-                        f"→ FOLLOW (1/{n} but weighted > 55%)"
-                    )
+        # Check if we have enough data for weighted voting
+        has_learning = any(
+            self.model_accuracy.get(k, {}).get("trades", 0) >= 20
+            for k in ["gpt", "claude", "gemini"]
+        )
+
+        if has_learning and n >= 2:
+            # WEIGHTED VOTING: proven models get more influence
+            follow_weight = 0.0
+            skip_weight = 0.0
+
+            for m in active:
+                weight_key = self.MODEL_WEIGHT_KEYS.get(m.model, "")
+                weight = self.model_weights.get(weight_key, 0.333)
+
+                if m.action == "FOLLOW":
+                    follow_weight += weight * max(0.5, m.confidence)
                 else:
-                    logger.info(f"Consensus: {len(follow)}/{n} FOLLOW → SKIP (minority)")
-            else:
-                logger.info(f"Consensus: {len(follow)}/{n} FOLLOW → SKIP (no learning data)")
+                    skip_weight += weight * max(0.5, m.confidence)
+
+            total_weight = follow_weight + skip_weight
+            follow_ratio = (follow_weight / total_weight) if total_weight > 0 else 0
+
+            # FOLLOW if weighted votes exceed 40% (slightly aggressive)
+            if follow_ratio >= 0.40:
+                action = "FOLLOW"
+
+            # OVERRIDE: 3/3 FOLLOW always trades regardless of weights
+            if len(follow) == n and n >= 2:
+                action = "FOLLOW"
+
+            logger.info(
+                f"Weighted vote: FOLLOW={follow_weight:.3f} SKIP={skip_weight:.3f} "
+                f"ratio={follow_ratio:.1%} → {action} (threshold=40%)"
+            )
+        else:
+            # No learning data: simple 2/3 majority
+            if n >= 2 and len(follow) >= 2:
+                action = "FOLLOW"
+            logger.info(f"Simple vote: {len(follow)}/{n} FOLLOW → {action}")
 
         # Weighted confidence of agreeing models
         if follow and action == "FOLLOW":
