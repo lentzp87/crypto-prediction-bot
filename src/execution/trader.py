@@ -798,7 +798,7 @@ class Trader:
     async def monitor_positions(self, get_market_price):
         """
         Continuously monitor open positions for TP/SL/trailing/stale.
-        get_market_price: async callable(ticker) → price_cents or None
+        get_market_price: async callable(ticker, side) → price_cents or None
         """
         self._running = True
 
@@ -807,10 +807,11 @@ class Trader:
                 positions_to_close = []
 
                 for trade_id, pos in list(self.positions.items()):
-                    # Get current market price (returns YES probability)
-                    price = await get_market_price(pos.ticker)
+                    # Get executable exit price for our held side
+                    # _get_market_price now returns bid-side price (truthful P&L)
+                    price = await get_market_price(pos.ticker, pos.side)
                     if price is not None:
-                        # For NO positions, our value = 100 - YES probability
+                        # For NO positions, our value = 100 - YES-denominated price
                         effective_price = (100 - price) if pos.side == "no" else price
                         pos.update_price(effective_price)
 

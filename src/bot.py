@@ -151,91 +151,61 @@ class CryptoPredictionBot:
 
     async def _on_signal(self, signal):
         """
-        Called by scanner when an edge is detected.
-        Tiered gate:
-          - 15¢+ edge → AUTO-TRADE (skip AI, the math is strong enough)
-          - 8-15¢ edge → AI validation, 1/3 FOLLOW is enough
-          - <8¢ edge → shouldn't get here (scanner filters), but require 2/3
+        Called by scanner when a friction-adjusted edge is detected.
+        ALL signals go through AI validation — no bypasses.
+        Requires 2/3 AI FOLLOW to trade. If AI is down, skip.
         """
         logger.info(
             f"Signal: {signal.side.upper()} {signal.ticker} "
-            f"edge={signal.edge_cents:.1f}¢ prob={signal.our_probability:.1%}"
+            f"edge={signal.edge_cents:.1f}¢ (after friction) "
+            f"prob={signal.our_probability:.1%}"
         )
 
-        # ── HIGH EDGE BYPASS: 15¢+ edge skips AI entirely ──
-        if signal.edge_cents >= 15:
-            self.trader._log_event(
-                "AUTO_TRADE", signal.ticker,
-                f"High edge {signal.edge_cents:.1f}¢ — bypassing AI gate"
-            )
-            logger.info(f"AUTO_TRADE: {signal.ticker} edge={signal.edge_cents:.1f}¢ — skipping AI")
+        # ALL signals go through AI — no high-edge bypass, no auto-follow
+        consensus = await self.ai_validator.validate(signal)
 
-            # Create a dummy consensus for the trade
-            from src.ai.validator import ConsensusResult, ModelResponse
-            consensus = ConsensusResult(
-                action="FOLLOW",
-                side=signal.side,
-                confidence=0.8,
-                models=[],
-                follow_count=3,
-                skip_count=0,
-                active_count=3,
-            )
-            should_trade = True
-        else:
-            # ── NORMAL AI GATE ──
-            consensus = await self.ai_validator.validate(signal)
+        # Record AI decision
+        models = {m.model: {"action": m.action, "confidence": m.confidence, "reasoning": m.reasoning}
+                  for m in consensus.models}
 
-            # Record AI decision
-            models = {m.model: {"action": m.action, "confidence": m.confidence, "reasoning": m.reasoning}
-                      for m in consensus.models}
+        self.db.record_ai_decision(
+            signal_id=0,
+            ticker=signal.ticker,
+            gpt=models.get("gpt-4.1-nano", models.get("gpt-4o-mini", {})),
+            claude=models.get("claude-haiku-4.5", {}),
+            gemini=models.get("gemini-2.5-flash-lite", models.get("gemini-2.0-flash", {})),
+            consensus_action=consensus.action,
+            consensus_side=consensus.side,
+        )
 
-            self.db.record_ai_decision(
-                signal_id=0,
-                ticker=signal.ticker,
-                gpt=models.get("gpt-4.1-nano", models.get("gpt-4o-mini", {})),
-                claude=models.get("claude-haiku-4.5", {}),
-                gemini=models.get("gemini-2.5-flash-lite", models.get("gemini-2.0-flash", {})),
-                consensus_action=consensus.action,
-                consensus_side=consensus.side,
-            )
+        # Log AI consensus details to event log (visible on dashboard)
+        model_votes = []
+        for m in consensus.models:
+            vote = f"{m.model}={m.action}"
+            if m.confidence:
+                vote += f"({m.confidence:.0%})"
+            model_votes.append(vote)
+        votes_str = ", ".join(model_votes)
 
-            # Log AI consensus details to event log (visible on dashboard)
-            model_votes = []
-            for m in consensus.models:
-                vote = f"{m.model}={m.action}"
-                if m.confidence:
-                    vote += f"({m.confidence:.0%})"
-                model_votes.append(vote)
-            votes_str = ", ".join(model_votes)
+        self.trader._log_event(
+            "AI", signal.ticker,
+            f"{consensus.action} ({consensus.follow_count}/{consensus.active_count}) "
+            f"edge={signal.edge_cents:.1f}¢ | {votes_str}"
+        )
 
+        # Require 2/3 FOLLOW from active models. No overrides.
+        # If all models failed (0 active), skip — don't trade blind.
+        should_trade = (
+            consensus.action == "FOLLOW"
+            and consensus.follow_count >= 2
+            and consensus.active_count >= 2
+        )
+
+        if not should_trade and consensus.active_count == 0:
             self.trader._log_event(
                 "AI", signal.ticker,
-                f"{consensus.action} ({consensus.follow_count}/{consensus.active_count}) "
-                f"edge={signal.edge_cents:.1f}¢ | {votes_str}"
+                f"SKIP — all AI models failed, not trading blind"
             )
-
-            should_trade = consensus.action == "FOLLOW"
-
-            # AGGRESSIVE: even 1/3 FOLLOW is enough for 10¢+ edges
-            if (not should_trade
-                    and consensus.follow_count >= 1
-                    and signal.edge_cents >= 10):
-                should_trade = True
-                self.trader._log_event(
-                    "OVERRIDE", signal.ticker,
-                    f"1/{consensus.active_count} FOLLOW + strong edge {signal.edge_cents:.1f}¢ — taking it"
-                )
-
-            # Fallback: if ALL models failed (0/0), auto-follow for decent edges
-            if (not should_trade
-                    and consensus.active_count == 0
-                    and signal.edge_cents >= 8):
-                should_trade = True
-                self.trader._log_event(
-                    "AI", signal.ticker,
-                    f"AUTO-FOLLOW (all AI down, edge={signal.edge_cents:.1f}¢)"
-                )
 
         if should_trade:
             trade_id = await self.trader.execute_trade(signal, consensus)
@@ -259,15 +229,16 @@ class CryptoPredictionBot:
 
     # ── Market Price Lookup ────────────────────────────────────
 
-    async def _get_market_price(self, ticker: str) -> Optional[int]:
+    async def _get_market_price(self, ticker: str, side: str = "yes") -> Optional[int]:
         """
         Get current market price for a contract.
+        Returns the EXECUTABLE exit price (bid for our held side), not midpoint.
         For LIVE mode: fetch real orderbook price from Kalshi API.
         Fallback: use model estimate with actual remaining time.
         """
         # Try live Kalshi price first (for live mode)
         if self.trader.mode == "live":
-            live_price = await self._fetch_kalshi_price(ticker)
+            live_price = await self._fetch_kalshi_price(ticker, side)
             if live_price is not None:
                 return live_price
 
@@ -302,8 +273,14 @@ class CryptoPredictionBot:
         simulated_price = int(est.probability * 100)
         return max(1, min(99, simulated_price))
 
-    async def _fetch_kalshi_price(self, ticker: str) -> Optional[int]:
-        """Fetch real market price from Kalshi orderbook."""
+    async def _fetch_kalshi_price(self, ticker: str, side: str = "yes") -> Optional[int]:
+        """
+        Fetch EXECUTABLE exit price from Kalshi orderbook.
+        Returns the bid for our held side (what we'd actually get if we sold).
+        - Holding YES: return yes_bid (what someone will pay for our YES)
+        - Holding NO: return no_bid (what someone will pay for our NO)
+        This is more truthful than midpoint for P&L and exit decisions.
+        """
         try:
             client = self.trader._client
             if not client:
@@ -316,10 +293,22 @@ class CryptoPredictionBot:
             )
             resp.raise_for_status()
             data = resp.json().get("market", {})
-            # Use yes_bid as the current tradeable price
+
             yes_bid = data.get("yes_bid_dollars", "")
             yes_ask = data.get("yes_ask_dollars", "")
-            if yes_bid and yes_ask:
+            no_bid = data.get("no_bid_dollars", "")
+            no_ask = data.get("no_ask_dollars", "")
+
+            if side == "yes" and yes_bid:
+                # Executable exit for YES position = yes_bid
+                return max(1, min(99, int(float(yes_bid) * 100)))
+            elif side == "no" and no_bid:
+                # Executable exit for NO position = no_bid
+                # But caller expects YES-denominated price, so return 100 - no_bid
+                no_bid_cents = int(float(no_bid) * 100)
+                return max(1, min(99, 100 - no_bid_cents))
+            elif yes_bid and yes_ask:
+                # Fallback: midpoint if we don't have the right side's bid
                 bid = int(float(yes_bid) * 100)
                 ask = int(float(yes_ask) * 100)
                 mid = (bid + ask) // 2

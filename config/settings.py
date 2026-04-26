@@ -1,6 +1,6 @@
 """
 Configuration — loads from .env with Pydantic validation.
-Adjusted for $525 bankroll. V3.0 — aggressive + adaptive.
+V4.0 — capital preservation + friction-adjusted edge.
 """
 
 from pydantic_settings import BaseSettings
@@ -28,34 +28,35 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     google_api_key: Optional[str] = None
 
-    # ── Risk Management ($535 bankroll) — FULL AGGRESSION ─────────
-    wallet_size_usd: float = 535.0
-    max_daily_loss_usd: float = 150.0       # full send: $150/day
-    max_positions: int = 15                 # many at-bats (was 8)
-    max_trades_per_day: int = 200           # uncapped practically (was 60)
-    min_edge_cents: float = 8.0             # keep at 8¢
-    max_single_trade_usd: float = 30.0      # ~6% of wallet
-    circuit_breaker_losses: int = 6         # more tolerant
-    circuit_breaker_pause_min: int = 5      # short pause
+    # ── Risk Management ($527 bankroll) — CAPITAL PRESERVATION ──
+    wallet_size_usd: float = 527.0
+    max_daily_loss_usd: float = 45.0        # ~8.5% of bankroll max/day
+    max_positions: int = 5                  # focused, not scattered
+    max_trades_per_day: int = 40            # quality over quantity
+    min_edge_cents: float = 7.0             # 7¢ AFTER friction (was 8¢ raw)
+    max_single_trade_usd: float = 12.0      # ~2.3% of wallet
+    circuit_breaker_losses: int = 3         # stop fast on bad streaks
+    circuit_breaker_pause_min: int = 30     # real cooldown
 
     # ── Position Limits ────────────────────────────────────────
-    max_same_strike: int = 3
-    max_same_window: int = 4                # allow more in same window
-    cooldown_seconds: int = 120             # 2 min cooldown
+    max_same_strike: int = 2
+    max_same_window: int = 3                # don't over-concentrate
+    cooldown_seconds: int = 180             # 3 min cooldown
 
-    # ── Sizing (Kelly-lite, scaled for $535) ───────────────────
-    base_trade_size_usd: float = 12.0       # bigger base (was $8)
-    max_trade_size_usd: float = 30.0        # higher cap (was $20)
+    # ── Sizing (Kelly-lite, scaled for $527) ───────────────────
+    base_trade_size_usd: float = 6.0        # conservative base
+    max_trade_size_usd: float = 12.0        # max ~2.3% of wallet
 
     # ── Asset-Specific Configs ─────────────────────────────────
-    btc_min_edge_cents: float = 8.0
-    btc_max_spread_cents: float = 8.0       # wider tolerance
+    btc_min_edge_cents: float = 9.0         # slightly higher for BTC
+    btc_max_spread_cents: float = 5.0       # tight for 15M contracts
     btc_jump_multiplier_cap: float = 2.0
 
-    eth_min_edge_cents: float = 8.0         # same as BTC now
-    eth_max_spread_cents: float = 7.0       # wider
+    eth_min_edge_cents: float = 11.0        # ETH needs more edge (thinner books)
+    eth_max_spread_cents: float = 4.0       # tight for 15M contracts
     eth_jump_multiplier_cap: float = 2.5
-    max_contracts_per_trade: int = 10        # 2x more contracts (was 5)
+    daily_max_spread_cents: float = 15.0    # daily contracts: wider tolerance (limit orders)
+    max_contracts_per_trade: int = 3         # conservative sizing
 
     # ── Take Profit / Stop Loss (cents) ────────────────────────
     # Tiered by entry price bucket

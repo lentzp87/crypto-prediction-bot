@@ -439,12 +439,16 @@ class KalshiScanner:
             filter_stats["price_range"] = filter_stats.get("price_range", 0) + 1
             return None
 
-        # Spread filter — adaptive by contract type
-        # 15M contracts: tight spread (10¢) since they're short-lived
-        # Daily contracts: very permissive (30¢) — spreads widen drastically off-hours/weekends
-        #   (we place limit orders anyway, so wide spread mostly means thin book, not bad entry)
+        # Spread filter — use asset-specific settings from config
+        # Daily contracts get wider tolerance (thin books off-hours, but we place limit orders)
         is_daily = contract.minutes_to_close > 60
-        max_spread = 30 if is_daily else 10
+        is_eth = "KXETH" in contract.ticker
+        if is_daily:
+            max_spread = self.settings.daily_max_spread_cents
+        elif is_eth:
+            max_spread = self.settings.eth_max_spread_cents
+        else:
+            max_spread = self.settings.btc_max_spread_cents
         if contract.spread > max_spread:
             filter_stats["spread"] = filter_stats.get("spread", 0) + 1
             return None
@@ -461,12 +465,22 @@ class KalshiScanner:
         yes_entry_price = contract.yes_ask / 100.0  # executable entry for YES
         no_entry_price = contract.no_ask / 100.0    # executable entry for NO
 
-        # Edge = our probability - executable entry price (in cents)
-        yes_edge = (est.probability - yes_entry_price) * 100
-        no_edge = ((1 - est.probability) - no_entry_price) * 100
+        # Raw edge = our probability - executable entry price (in cents)
+        yes_edge_raw = (est.probability - yes_entry_price) * 100
+        no_edge_raw = ((1 - est.probability) - no_entry_price) * 100
+
+        # FRICTION-ADJUSTED EDGE: subtract real trading costs
+        # 1¢ entry tolerance (we bid ask+1) + 2¢ exit slippage (selling into bid)
+        ENTRY_FRICTION = 1.0
+        EXIT_FRICTION = 2.0
+        TOTAL_FRICTION = ENTRY_FRICTION + EXIT_FRICTION  # 3¢
+
+        yes_edge = yes_edge_raw - TOTAL_FRICTION
+        no_edge = no_edge_raw - TOTAL_FRICTION
 
         # Use adaptive min edge if learning engine has enough data
         min_edge = self.adaptive_min_edge if self.adaptive_min_edge else self.settings.min_edge_cents
+        best_edge_raw = max(yes_edge_raw, no_edge_raw)
         best_edge = max(yes_edge, no_edge)
         best_side = "yes" if yes_edge >= no_edge else "no"
 
@@ -479,10 +493,11 @@ class KalshiScanner:
         jumps = engine_dict.get("jumps_last_hour", 0)
 
         # Log evaluation for all non-extreme contracts so we can see what's happening
-        if best_edge >= 1.0:  # only log if at least 1¢ edge to avoid noise
+        if best_edge_raw >= 1.0:  # only log if at least 1¢ raw edge to avoid noise
             jump_tag = f" JUMP:{jump_mult:.1f}x" if jump_mult > 1.0 else ""
             logger.info(
-                f"Edge {contract.ticker}: {best_side} {best_edge:+.1f}¢ "
+                f"Edge {contract.ticker}: {best_side} raw={best_edge_raw:+.1f}¢ "
+                f"real={best_edge:+.1f}¢ (after 3¢ friction) "
                 f"(prob={est.probability:.0%}, mkt={mkt_prob:.0%}, "
                 f"spread={contract.spread}¢ "
                 f"HAR={har_vol:.3f}%, vol={our_vol:.3f}%, z={est.z_score:+.2f}, "
