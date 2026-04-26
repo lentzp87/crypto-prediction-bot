@@ -64,34 +64,60 @@ class Position:
             self.highest_price = price_cents
 
     @property
+    def is_daily(self) -> bool:
+        """True if this is a daily contract (not 15M)."""
+        return "15M" not in self.ticker
+
+    @property
     def tp_target(self) -> int:
-        """Dynamic take profit based on entry price and edge quality."""
+        """Dynamic take profit based on entry price and contract type."""
         ep = self.entry_price_cents
-        if ep <= 39:
-            return ep + 20
-        elif ep <= 69:
-            return ep + 25
+
+        if self.is_daily:
+            # Daily contracts: ride toward settlement, wider TP
+            # These have hours to resolve — aim for big wins
+            if ep <= 39:
+                return ep + 30       # e.g., 30¢ → 60¢
+            elif ep <= 69:
+                return min(95, ep + 25)  # e.g., 50¢ → 75¢
+            else:
+                return 97            # high-entry: ride to near-settlement
         else:
-            return 97
+            # 15M contracts: tighter TP, need to capture quickly
+            if ep <= 39:
+                return ep + 20
+            elif ep <= 69:
+                return ep + 25
+            else:
+                return 97
 
     @property
     def sl_target(self) -> int:
-        """Dynamic stop loss — tighter for aged positions."""
+        """Dynamic stop loss — wider for daily contracts, tighter for 15M."""
         ep = self.entry_price_cents
         age = self.age_minutes
 
-        # Base stop loss by entry bucket
-        if ep <= 39:
-            base_sl = max(1, ep - 10)
-        elif ep <= 69:
-            base_sl = max(1, ep - 12)
+        if self.is_daily:
+            # Daily contracts: WIDE stop loss — these fluctuate a lot intraday
+            # Getting stopped out on normal noise is the #1 profit killer
+            if ep <= 39:
+                base_sl = max(1, ep - 20)   # e.g., 30¢ → SL at 10¢
+            elif ep <= 69:
+                base_sl = max(1, ep - 20)   # e.g., 55¢ → SL at 35¢
+            else:
+                base_sl = max(1, ep - 15)   # e.g., 75¢ → SL at 60¢
         else:
-            base_sl = max(1, ep - 8)
+            # 15M contracts: tighter stops are fine
+            if ep <= 39:
+                base_sl = max(1, ep - 10)
+            elif ep <= 69:
+                base_sl = max(1, ep - 12)
+            else:
+                base_sl = max(1, ep - 8)
 
-        # Tighten stop as position ages (for 15M contracts)
-        if age > 10:
-            # After 10 min, tighten by 3¢
-            base_sl = max(base_sl, ep - 5)
+            # Tighten stop as 15M position ages
+            if age > 10:
+                base_sl = max(base_sl, ep - 5)
 
         return max(1, base_sl)
 
@@ -865,20 +891,25 @@ class Trader:
         if price <= pos.sl_target:
             return f"stop_loss (target={pos.sl_target}¢, got={price}¢)"
 
-        # Trailing stop logic
-        if profit_cents >= 6 and not pos.trailing_active:
+        # Trailing stop logic — different thresholds for daily vs 15M
+        is_daily = pos.is_daily
+        trail_activate = 15 if is_daily else 6     # dailies need bigger move to activate
+        trail_offset = 8 if is_daily else 4         # dailies get wider trail
+        trail_lock_in = 5 if is_daily else 2        # dailies lock in less initially
+
+        if profit_cents >= trail_activate and not pos.trailing_active:
             pos.trailing_active = True
-            pos.trailing_stop_price = entry + 2  # lock in +2¢
+            pos.trailing_stop_price = entry + trail_lock_in
             logger.debug(f"Trailing stop activated for {pos.ticker} at {pos.trailing_stop_price}¢")
 
         if pos.trailing_active:
             # Update trailing stop based on highest price
-            new_trail = pos.highest_price - 4
+            new_trail = pos.highest_price - trail_offset
             if new_trail > pos.trailing_stop_price:
                 pos.trailing_stop_price = new_trail
 
-            # High-value positions: tighter trail
-            if price >= 80:
+            # High-value positions: tighter trail (only for 15M)
+            if not is_daily and price >= 80:
                 tight_trail = pos.highest_price - 5
                 if tight_trail > pos.trailing_stop_price:
                     pos.trailing_stop_price = tight_trail
@@ -886,8 +917,8 @@ class Trader:
             if price <= pos.trailing_stop_price:
                 return f"trailing_stop (trail={pos.trailing_stop_price}¢, price={price}¢)"
 
-        # Stale timeout (15-min contracts)
-        if pos.age_minutes >= self.settings.stale_timeout_15m_minutes:
+        # Stale timeout — only for 15M contracts
+        if not is_daily and pos.age_minutes >= self.settings.stale_timeout_15m_minutes:
             return f"stale_timeout ({pos.age_minutes:.0f} min old)"
 
         # Settlement (contract resolved)
@@ -968,11 +999,17 @@ class Trader:
         pnl = pnl_per_contract * original_count
 
         # Record cooldown so we don't immediately re-enter this contract
+        # LOSS COOLDOWN: 30 min for losses (stop re-entering losers)
+        # WIN COOLDOWN: normal cooldown_seconds from settings
         series_key = pos.ticker[:25]
-        self._cooldowns[series_key] = time.time()
+        if pnl < 0:
+            # After a loss: block this ticker for 30 minutes
+            self._cooldowns[series_key] = time.time() + 1800 - self.settings.cooldown_seconds
+        else:
+            self._cooldowns[series_key] = time.time()
 
         # Prune old cooldowns (keep dict from growing forever)
-        cutoff = time.time() - 600  # 10 min
+        cutoff = time.time() - 2400  # 40 min (covers loss cooldown)
         self._cooldowns = {k: v for k, v in self._cooldowns.items() if v > cutoff}
 
         self.db.close_trade(

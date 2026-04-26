@@ -43,35 +43,37 @@ class ConsensusResult:
     active_count: int
 
 
-VALIDATION_PROMPT = """You are a trade quality assessor for a crypto prediction market bot on Kalshi. Your goal is BALANCED evaluation — approve good trades, reject bad ones.
+VALIDATION_PROMPT = """You are evaluating a crypto binary options trade on Kalshi. Be precise — your confidence score MUST reflect your actual certainty, not a default value.
 
 SIGNAL:
 - Contract: {ticker}
-- Side: {side} | Entry ask: {price}¢ | Raw edge: {edge:.1f}¢
-- Our HAR volatility model says {probability:.1f}%, market mid implies {implied:.1f}%
-- Spread: {spread}¢
-- Current price: ${current_price} vs strike ${strike}
-- Time to expiry: {minutes:.1f} minutes
+- Side: {side} | Entry: {price}¢ | Edge after 3¢ friction: {edge:.1f}¢
+- Model probability: {probability:.1f}% | Market implies: {implied:.1f}%
+- Spread: {spread}¢ | Time to expiry: {minutes:.1f} minutes
+- BTC/ETH price: ${current_price} | Strike: ${strike}
 
-CONTEXT:
-- RSI: {rsi} | Momentum: {momentum}% | Volatility: {vol}%
-- VWAP: ${vwap} | EMA9/21: ${ema21}/${ema21}
+TECHNICALS:
+- RSI: {rsi} | Momentum: {momentum}% | 15m Vol: {vol}%
+- VWAP: ${vwap} | EMA9: ${ema9} | EMA21: ${ema21}
 
-EVALUATE:
-1. Edge after friction: entry slippage ~1¢, exit slippage ~2¢. Does the edge survive? (edges 8¢+ usually do)
-2. Spread: under 8¢ is fine. Only flag if truly illiquid.
-3. Time: 4+ minutes to expiry is tradable.
-4. Direction: does momentum/RSI support or contradict this side?
+CHECK EACH (answer yes/no in your reasoning):
+1. FRICTION TEST: Edge is already friction-adjusted (3¢ removed). Is remaining edge still meaningful (>5¢)?
+2. DIRECTION TEST: Does momentum/RSI support this side? If buying YES (price above strike), is price trending up? If buying NO, trending down?
+3. SPREAD TEST: Is spread reasonable for this contract type? (<6¢ good, 6-10¢ okay, >10¢ risky for short contracts)
+4. TIME TEST: Is there enough time for this to play out? (>5min for 15M, >2hr for daily = good)
+5. STALE QUOTE TEST: Could this edge exist because the orderbook hasn't updated? Large edges (>20¢) on low-volume contracts are suspicious.
 
-DECISION RULES:
-- FOLLOW if edge >= 8¢ AND survives friction AND no major red flag
-- FOLLOW if edge >= 15¢ — large edges are usually real on Kalshi crypto
-- SKIP only if there is a SPECIFIC, CONCRETE problem (not vague uncertainty)
-- Default to FOLLOW when the math works. We want to TRADE, not sit on the sidelines.
-- A 10¢ edge that survives 3¢ friction is still a 7¢ edge — that's a good trade.
+CONFIDENCE CALIBRATION (do NOT default to 80%):
+- 90-95%: All 5 checks pass clearly, strong directional alignment
+- 75-85%: 4 of 5 checks pass, minor concern on one
+- 60-70%: Mixed signals, edge is real but direction unclear
+- 40-55%: Multiple red flags, probably skip
+- Below 40%: Clear skip
+
+DECISION: FOLLOW if 4+ checks pass and confidence >= 65%. SKIP if 2+ checks fail or confidence < 60%.
 
 Respond with ONLY valid JSON (no markdown):
-{{"action": "FOLLOW" or "SKIP", "confidence": 0.0-1.0, "side": "{side}", "reasoning": "one sentence", "risk_level": "low" or "medium" or "high", "fake_edge_risk": "none" or "stale_quote" or "wide_spread" or "low_liquidity" or "model_overconfident" or "time_pressure"}}"""
+{{"action": "FOLLOW" or "SKIP", "confidence": 0.0-1.0, "side": "{side}", "reasoning": "one sentence with check results", "risk_level": "low" or "medium" or "high", "fake_edge_risk": "none" or "stale_quote" or "wide_spread" or "low_liquidity" or "model_overconfident" or "time_pressure"}}"""
 
 
 class AIValidator:
@@ -184,13 +186,11 @@ class AIValidator:
 
     def _calculate_consensus(self, models: list[ModelResponse], default_side: str) -> ConsensusResult:
         """
-        WEIGHTED consensus — models earn influence by being right.
+        Simple 2/3 majority vote. Weighted voting can only UPGRADE (SKIP → FOLLOW),
+        never DOWNGRADE a clear majority.
 
-        Instead of simple 2/3 majority, each model's vote is weighted
-        by its historical accuracy. A model with 70% accuracy gets more
-        say than one with 50%.
-
-        Fallback: if not enough learning data, use simple 2/3 majority.
+        RULE: If 2 of 3 models say FOLLOW, consensus is FOLLOW. Period.
+        Weighted voting is ONLY used when the simple vote is tied (1/2 or 1/3).
         """
         active = [m for m in models if m.action in ("FOLLOW", "SKIP")]
         follow = [m for m in active if m.action == "FOLLOW"]
@@ -199,41 +199,37 @@ class AIValidator:
         action = "SKIP"
         n = len(active)
 
-        # Check if we have enough data for weighted voting
-        has_learning = any(
-            self.model_accuracy.get(k, {}).get("trades", 0) >= 20
-            for k in ["gpt", "claude", "gemini"]
-        )
-
-        if has_learning and n >= 2:
-            # WEIGHTED VOTING: sum up weights of FOLLOW vs SKIP
-            follow_weight = 0.0
-            skip_weight = 0.0
-
-            for m in active:
-                weight_key = self.MODEL_WEIGHT_KEYS.get(m.model, "")
-                weight = self.model_weights.get(weight_key, 0.333)
-
-                if m.action == "FOLLOW":
-                    # Scale weight by model's confidence too
-                    follow_weight += weight * max(0.5, m.confidence)
-                else:
-                    skip_weight += weight * max(0.5, m.confidence)
-
-            # FOLLOW if weighted follow votes exceed 45% of total weight
-            # (lower threshold than 50% = more aggressive)
-            total_weight = follow_weight + skip_weight
-            if total_weight > 0 and (follow_weight / total_weight) >= 0.45:
-                action = "FOLLOW"
-
-            logger.info(
-                f"Weighted vote: FOLLOW={follow_weight:.3f} SKIP={skip_weight:.3f} "
-                f"→ {action} (threshold=45%)"
+        # HARD RULE: 2/3 or 3/3 FOLLOW = FOLLOW, no exceptions
+        if n >= 2 and len(follow) >= 2:
+            action = "FOLLOW"
+            logger.info(f"Consensus: {len(follow)}/{n} FOLLOW → FOLLOW (majority)")
+        elif n >= 2 and len(follow) == 1:
+            # 1/3 or 1/2 — check weighted voting for possible upgrade
+            has_learning = any(
+                self.model_accuracy.get(k, {}).get("trades", 0) >= 20
+                for k in ["gpt", "claude", "gemini"]
             )
-        else:
-            # Fallback: simple 2/3 majority
-            if n >= 2 and len(follow) >= 2:
-                action = "FOLLOW"
+            if has_learning:
+                follow_weight = 0.0
+                skip_weight = 0.0
+                for m in active:
+                    weight_key = self.MODEL_WEIGHT_KEYS.get(m.model, "")
+                    weight = self.model_weights.get(weight_key, 0.333)
+                    if m.action == "FOLLOW":
+                        follow_weight += weight * max(0.5, m.confidence)
+                    else:
+                        skip_weight += weight * max(0.5, m.confidence)
+                total_weight = follow_weight + skip_weight
+                if total_weight > 0 and (follow_weight / total_weight) >= 0.55:
+                    action = "FOLLOW"
+                    logger.info(
+                        f"Weighted upgrade: FOLLOW={follow_weight:.3f} SKIP={skip_weight:.3f} "
+                        f"→ FOLLOW (1/{n} but weighted > 55%)"
+                    )
+                else:
+                    logger.info(f"Consensus: {len(follow)}/{n} FOLLOW → SKIP (minority)")
+            else:
+                logger.info(f"Consensus: {len(follow)}/{n} FOLLOW → SKIP (no learning data)")
 
         # Weighted confidence of agreeing models
         if follow and action == "FOLLOW":
