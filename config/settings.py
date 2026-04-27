@@ -28,35 +28,35 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     google_api_key: Optional[str] = None
 
-    # ── Risk Management ($527 bankroll) — CAPITAL PRESERVATION ──
-    wallet_size_usd: float = 527.0
-    max_daily_loss_usd: float = 45.0        # ~8.5% of bankroll max/day
-    max_positions: int = 5                  # focused, not scattered
-    max_trades_per_day: int = 40            # quality over quantity
-    min_edge_cents: float = 7.0             # 7¢ AFTER friction (was 8¢ raw)
-    max_single_trade_usd: float = 12.0      # ~2.3% of wallet
-    circuit_breaker_losses: int = 3         # stop fast on bad streaks
-    circuit_breaker_pause_min: int = 30     # real cooldown
+    # ── Risk Management ($524 bankroll) — FULL SEND ─────────────
+    wallet_size_usd: float = 524.0
+    max_daily_loss_usd: float = 75.0        # ~14% of bankroll max/day
+    max_positions: int = 12                 # lots of at-bats
+    max_trades_per_day: int = 120           # no bottleneck
+    min_edge_cents: float = 4.0             # 4¢ after friction (dailies = 5¢ raw)
+    max_single_trade_usd: float = 20.0      # ~3.8% of wallet
+    circuit_breaker_losses: int = 5         # tolerant
+    circuit_breaker_pause_min: int = 2      # 2 min pause, get back in
 
     # ── Position Limits ────────────────────────────────────────
-    max_same_strike: int = 2
-    max_same_window: int = 3                # don't over-concentrate
-    cooldown_seconds: int = 180             # 3 min cooldown
+    max_same_strike: int = 3
+    max_same_window: int = 5                # stack up on good windows
+    cooldown_seconds: int = 60              # 1 min cooldown
 
-    # ── Sizing (Kelly-lite, scaled for $527) ───────────────────
-    base_trade_size_usd: float = 6.0        # conservative base
-    max_trade_size_usd: float = 12.0        # max ~2.3% of wallet
+    # ── Sizing (Kelly-lite, scaled for $524) ───────────────────
+    base_trade_size_usd: float = 10.0       # bigger base
+    max_trade_size_usd: float = 20.0        # up to ~3.8% of wallet
 
     # ── Asset-Specific Configs ─────────────────────────────────
-    btc_min_edge_cents: float = 9.0         # slightly higher for BTC
-    btc_max_spread_cents: float = 5.0       # tight for 15M contracts
+    btc_min_edge_cents: float = 4.0         # after friction (dailies only 1¢ friction)
+    btc_max_spread_cents: float = 8.0       # wider tolerance
     btc_jump_multiplier_cap: float = 2.0
 
-    eth_min_edge_cents: float = 11.0        # ETH needs more edge (thinner books)
-    eth_max_spread_cents: float = 4.0       # tight for 15M contracts
+    eth_min_edge_cents: float = 4.0         # same as BTC
+    eth_max_spread_cents: float = 7.0       # wider tolerance
     eth_jump_multiplier_cap: float = 2.5
-    daily_max_spread_cents: float = 15.0    # daily contracts: wider tolerance (limit orders)
-    max_contracts_per_trade: int = 3         # conservative sizing
+    daily_max_spread_cents: float = 25.0    # daily contracts: very wide (limit orders)
+    max_contracts_per_trade: int = 8         # bigger positions
 
     # ── Take Profit / Stop Loss (cents) ────────────────────────
     # Tiered by entry price bucket
