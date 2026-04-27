@@ -32,9 +32,9 @@ class Settings(BaseSettings):
     wallet_size_usd: float = 524.0
     max_daily_loss_usd: float = 75.0        # ~14% of bankroll max/day
     max_positions: int = 12                 # lots of at-bats
-    max_trades_per_day: int = 120           # no bottleneck
+    max_trades_per_day: int = 9999           # uncapped
     min_edge_cents: float = 4.0             # 4¢ after friction (dailies = 5¢ raw)
-    max_single_trade_usd: float = 20.0      # ~3.8% of wallet
+    max_single_trade_usd: float = 40.0      # ~7.6% of wallet
     circuit_breaker_losses: int = 5         # tolerant
     circuit_breaker_pause_min: int = 2      # 2 min pause, get back in
 
@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     eth_max_spread_cents: float = 7.0       # wider tolerance
     eth_jump_multiplier_cap: float = 2.5
     daily_max_spread_cents: float = 25.0    # daily contracts: very wide (limit orders)
-    max_contracts_per_trade: int = 8         # bigger positions
+    max_contracts_per_trade: int = 15        # big positions
 
     # ── Take Profit / Stop Loss (cents) ────────────────────────
     # Tiered by entry price bucket

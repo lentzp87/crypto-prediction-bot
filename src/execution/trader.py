@@ -74,14 +74,16 @@ class Position:
         ep = self.entry_price_cents
 
         if self.is_daily:
-            # Daily contracts: ride toward settlement, wider TP
-            # These have hours to resolve — aim for big wins
-            if ep <= 39:
-                return ep + 30       # e.g., 30¢ → 60¢
-            elif ep <= 69:
-                return min(95, ep + 25)  # e.g., 50¢ → 75¢
+            # Daily contracts settle at 0 or 100 — RIDE THEM
+            # High-entry (60-80¢): we believe this settles YES → aim for 95+
+            # Mid-entry (40-59¢): ride toward settlement
+            # Low-entry (<40¢): aim for big move
+            if ep >= 60:
+                return 97            # hold for settlement — the big payoff
+            elif ep >= 40:
+                return 95            # ride it out
             else:
-                return 97            # high-entry: ride to near-settlement
+                return ep + 30       # e.g., 30¢ → 60¢
         else:
             # 15M contracts: tighter TP, need to capture quickly
             if ep <= 39:
@@ -98,14 +100,16 @@ class Position:
         age = self.age_minutes
 
         if self.is_daily:
-            # Daily contracts: WIDE stop loss — these fluctuate a lot intraday
-            # Getting stopped out on normal noise is the #1 profit killer
-            if ep <= 39:
-                base_sl = max(1, ep - 20)   # e.g., 30¢ → SL at 10¢
-            elif ep <= 69:
-                base_sl = max(1, ep - 20)   # e.g., 55¢ → SL at 35¢
+            # Daily contracts: VERY wide stops — these settle at 0 or 100
+            # Getting stopped out on noise is THE #1 profit killer
+            # For 60-80¢ entries: we're betting this settles YES
+            #   Only bail if it drops to <35¢ (market fundamentally disagrees)
+            if ep >= 60:
+                base_sl = max(1, ep - 30)   # e.g., 70¢ → SL at 40¢ (hold through noise)
+            elif ep >= 40:
+                base_sl = max(1, ep - 25)   # e.g., 50¢ → SL at 25¢
             else:
-                base_sl = max(1, ep - 15)   # e.g., 75¢ → SL at 60¢
+                base_sl = max(1, ep - 20)   # e.g., 30¢ → SL at 10¢
         else:
             # 15M contracts: tighter stops are fine
             if ep <= 39:
@@ -424,7 +428,7 @@ class Trader:
 
     # ── Max contracts: Kalshi orderbooks are thin, limit to avoid
     # eating through the book and getting terrible fills ──
-    MAX_CONTRACTS = 10   # full send — chunked 1 at a time for thin books
+    MAX_CONTRACTS = 15   # full send — chunked 1 at a time for thin books
 
     def _calculate_size(self, signal, consensus) -> tuple[float, int]:
         """Kelly-lite position sizing with max-loss cap + contract cap."""
@@ -475,7 +479,7 @@ class Trader:
         count = max(1, int(trade_size / cost_per_contract))
 
         # ── Max loss cap: never risk more than $30 on a single position ──
-        max_loss_usd = 30.0
+        max_loss_usd = 40.0
         max_contracts_by_loss = max(1, int(max_loss_usd / cost_per_contract))
         count = min(count, max_contracts_by_loss)
 
